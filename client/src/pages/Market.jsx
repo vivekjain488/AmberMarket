@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import Hls from "hls.js";
 
 import { TerminalShell } from "@/components/TerminalShell";
 import { useSocket } from "@/hooks/useSocket";
@@ -23,6 +24,44 @@ function toYouTubeEmbedUrl(url) {
   } catch {
     return null;
   }
+}
+
+function isHlsUrl(url) {
+  return typeof url === "string" && (url.includes(".m3u8") || url.includes("playlist.m3u8"));
+}
+
+function HlsVideoPlayer({ src, className }) {
+  const videoRef = useRef(null);
+  const hlsRef = useRef(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!src || !videoRef.current) return;
+    setError(null);
+    if (Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true });
+      hlsRef.current = hls;
+      hls.loadSource(src);
+      hls.attachMedia(videoRef.current);
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) setError(data.type + ": " + (data.details || ""));
+      });
+      return () => {
+        hls.destroy();
+        hlsRef.current = null;
+      };
+    }
+    if (videoRef.current.canPlayType("application/vnd.apple.mpegurl")) {
+      videoRef.current.src = src;
+      return () => { videoRef.current.src = ""; };
+    }
+    setError("HLS not supported");
+  }, [src]);
+
+  if (error) return <div className={className + " flex items-center justify-center p-6 text-sm text-amber-300"}>{error}</div>;
+  return (
+    <video ref={videoRef} className={className} muted autoPlay playsInline controls />
+  );
 }
 
 export function Market() {
@@ -213,7 +252,19 @@ export function Market() {
         </div>
 
         <div className="border border-white/10 bg-white/5 p-4">
-          <div className="font-mono text-xs text-white/60">CCTV FEED (demo)</div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="font-mono text-xs text-white/60">CCTV FEED</div>
+            {junction?.vmPageUrl && (
+              <a
+                href={junction.vmPageUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[11px] text-amber-300 hover:text-amber-200"
+              >
+                View on Caltrans VM →
+              </a>
+            )}
+          </div>
           <div className="mt-3 overflow-hidden border border-white/10 bg-black/50">
             {junction?.stream_url && toYouTubeEmbedUrl(junction.stream_url) ? (
               <iframe
@@ -222,12 +273,34 @@ export function Market() {
                 src={toYouTubeEmbedUrl(junction.stream_url)}
                 allow="autoplay; encrypted-media"
               />
+            ) : junction?.stream_url && isHlsUrl(junction.stream_url) ? (
+              <HlsVideoPlayer src={junction.stream_url} className="h-[70vh] w-full object-contain bg-black" />
             ) : junction?.stream_url ? (
-              <div className="p-6 text-sm text-white/60">Stream URL is not a YouTube watch link.</div>
+              <div className="p-6 text-sm text-white/60">Unsupported stream format. Use &quot;View on Caltrans VM&quot; for live video.</div>
             ) : (
               <div className="p-6 text-sm text-white/60">No stream URL configured.</div>
             )}
           </div>
+
+          {(junction?.currentImageURL || (junction?.referenceImageUrls?.length > 0)) && (
+            <div className="mt-4">
+              <div className="font-mono text-xs text-white/60">FOOTAGE — current &amp; previous snapshots</div>
+              <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
+                {junction.currentImageURL && (
+                  <div className="border border-white/10 bg-black/40 p-1">
+                    <div className="font-mono text-[10px] text-amber-300/80">LIVE</div>
+                    <img src={junction.currentImageURL + "?t=" + Math.floor(Date.now() / 15000)} alt="Current" className="mt-1 w-full object-contain" />
+                  </div>
+                )}
+                {(junction.referenceImageUrls || []).slice(0, 11).map((url, i) => (
+                  <div key={url} className="border border-white/10 bg-black/40 p-1">
+                    <div className="font-mono text-[10px] text-white/40">−{i + 1}</div>
+                    <img src={url} alt={`Previous ${i + 1}`} className="mt-1 w-full object-contain" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </TerminalShell>

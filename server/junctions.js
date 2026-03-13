@@ -1,42 +1,69 @@
-const YT_DEFAULT = process.env.YOUTUBE_STREAM_URL || "https://www.youtube.com/watch?v=ydYDqZQpim8";
+const { getCctvCameras, getCctvBySlug } = require("./cctvData");
 
-/** Demo junctions (matches prompt.json IDs). */
-const junctions = [
-  {
-    id: "bkc-signal-1",
-    name: "Bandra-Kurla Complex Junction",
-    lat: 19.0596,
-    lng: 72.8656,
-    road_count: 4,
-    multiplier_tier: 3,
-    stream_url: YT_DEFAULT,
-    description: "High-traffic 4-way junction. Rush hour multiplier peaks at 6.5x",
-  },
-  {
-    id: "worli-signal-1",
-    name: "Worli Sea Face Signal",
-    lat: 19.0176,
-    lng: 72.8156,
+/**
+ * Junctions are built from Caltrans D3 CCTV CSV (cctvStatusD03.csv).
+ * Each junction has live stream (HLS), current image, and reference (previous) images.
+ * vids.txt lists featured VM page URLs; those cameras are ordered first.
+ */
+function buildJunctions() {
+  const cameras = getCctvCameras({
+    inServiceOnly: true,
+    withStreamOnly: true,
+    featuredFirst: true,
+  });
+
+  if (cameras.length === 0) {
+    return [{
+      id: "no-cctv",
+      name: "No CCTV data",
+      lat: 38.58,
+      lng: -121.49,
+      road_count: 0,
+      multiplier_tier: 0,
+      stream_url: null,
+      description: "Load server/cctvStatusD03.csv and restart server.",
+      currentImageURL: null,
+      referenceImageUrls: [],
+      vmPageUrl: null,
+    }];
+  }
+
+  return cameras.map((c) => ({
+    id: c.slug,
+    name: c.locationName || c.slug,
+    lat: c.latitude ?? 38.5,
+    lng: c.longitude ?? -121.5,
     road_count: 2,
     multiplier_tier: 1,
-    stream_url: YT_DEFAULT,
-    description: "Straight highway signal. Lower variance, steadier returns.",
-  },
-  {
-    id: "dadar-tt-1",
-    name: "Dadar TT Circle",
-    lat: 19.0178,
-    lng: 72.8478,
-    road_count: 5,
-    multiplier_tier: 4,
-    stream_url: YT_DEFAULT,
-    description: "5-road chaos junction. Highest variance. Up to 14x during peak.",
-  },
-];
+    stream_url: c.streamingVideoURL,
+    description: [c.nearbyPlace, c.route].filter(Boolean).join(" · ") || "Caltrans D3 CCTV",
+    // Footage links (current + previous images and VM page)
+    currentImageURL: c.currentImageURL,
+    referenceImageUrls: c.referenceImageUrls || [],
+    vmPageUrl: c.vmPageUrl,
+  }));
+}
+
+const junctions = buildJunctions();
 
 function getJunctionById(id) {
-  return junctions.find((j) => j.id === id);
+  const j = junctions.find((j) => j.id === id);
+  if (j) return j;
+  const c = getCctvBySlug(id);
+  if (!c) return null;
+  return {
+    id: c.slug,
+    name: c.locationName || c.slug,
+    lat: c.latitude ?? 38.5,
+    lng: c.longitude ?? -121.5,
+    road_count: 2,
+    multiplier_tier: 1,
+    stream_url: c.streamingVideoURL,
+    description: [c.nearbyPlace, c.route].filter(Boolean).join(" · ") || "Caltrans D3 CCTV",
+    currentImageURL: c.currentImageURL,
+    referenceImageUrls: c.referenceImageUrls || [],
+    vmPageUrl: c.vmPageUrl,
+  };
 }
 
 module.exports = { junctions, getJunctionById };
-

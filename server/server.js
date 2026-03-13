@@ -12,6 +12,7 @@ const { ethers } = require("ethers");
 dotenv.config();
 
 const { junctions, getJunctionById } = require("./junctions");
+const { getCctvCameras, getCctvBySlug } = require("./cctvData");
 
 const PORT = Number(process.env.PORT || 3001);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -211,6 +212,17 @@ async function transition(next) {
 }
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
+
+app.get("/api/cctv", (req, res) => {
+  const list = getCctvCameras({ inServiceOnly: false, withStreamOnly: false, featuredFirst: true });
+  res.json({ cameras: list });
+});
+
+app.get("/api/cctv/:slug", (req, res) => {
+  const cam = getCctvBySlug(req.params.slug);
+  if (!cam) return res.status(404).json({ error: "NOT_FOUND" });
+  res.json(cam);
+});
 
 app.get("/api/junctions", (req, res) => {
   res.json({ junctions, activeJunctionId: engine.activeJunctionId });

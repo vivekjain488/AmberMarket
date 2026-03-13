@@ -22,7 +22,12 @@ export function Home() {
     })();
   }, []);
 
-  const center = useMemo(() => ({ lat: 19.076, lng: 72.8777 }), []);
+  const center = useMemo(() => {
+    if (junctions.length > 0 && junctions[0].lat != null && junctions[0].lng != null) {
+      return { lat: junctions[0].lat, lng: junctions[0].lng };
+    }
+    return { lat: 38.58, lng: -121.49 };
+  }, [junctions]);
 
   return (
     <TerminalShell
