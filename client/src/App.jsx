@@ -1,18 +1,13 @@
-import { useState } from "react";
-import { Button } from "./components/ui/button";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { Home } from "./pages/Home";
+import { Market } from "./pages/Market";
 
-function App() {
-  const [message, setMessage] = useState("");
-
+export default function App() {
   return (
-    <div>
-      <h1>Hello World</h1>
-      <Button onClick={() => setMessage("you wanted this boilerplate in typescript? you bloody masochist")}>
-        Click me
-      </Button>
-      {message && <p>{message}</p>}
-    </div>
-  )
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/market/:junctionId" element={<Market />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
 }
-
-export default App;

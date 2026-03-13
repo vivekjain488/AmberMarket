@@ -1,0 +1,23 @@
+# Root ignores (monorepo)
+node_modules/
+dist/
+build/
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor / tooling
+.vscode/
+.idea/
+.zed/
+.cursor/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+

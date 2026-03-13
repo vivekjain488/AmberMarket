@@ -1,27 +1,23 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
-const { ALCHEMY_API_KEY, ETHERSCAN_API_KEY, PRIVATE_KEY } = process.env;
+const { BASE_SEPOLIA_RPC, ORACLE_PRIVATE_KEY } = process.env;
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
-    version: "0.8.28",
+    version: "0.8.20",
     settings: {
       optimizer: {
         enabled: true,
         runs: 200,
       },
-      viaIR: true,
     },
   },
   paths: {
     sources: "./contracts",
     cache: "./cache",
     artifacts: "./artifacts"
-  },
-  etherscan: {
-    apiKey: ETHERSCAN_API_KEY
   },
   networks: {
     localhost: {
@@ -33,11 +29,11 @@ module.exports = {
         count: 20,
       }
     },
-    sepolia: {
-      url: `https://rpc.sepolia.ethpandaops.io`,
-      accounts: [`0x${PRIVATE_KEY}`],
-      chainId: 11155111,
-    }
+    baseSepolia: {
+      url: BASE_SEPOLIA_RPC || "https://sepolia.base.org",
+      accounts: ORACLE_PRIVATE_KEY ? [`0x${ORACLE_PRIVATE_KEY.replace(/^0x/, "")}`] : [],
+      chainId: 84532,
+    },
     // hardhat: {
     //   // This is the default network when you run `npx hardhat test`
     //   // Remove gas limits to allow unlimited gas for testing
