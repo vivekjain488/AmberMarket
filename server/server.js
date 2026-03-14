@@ -82,9 +82,9 @@ const engine = {
   marketId: null,
   lastSettlement: null,
   countdown: {
-    predictionOpenMs: 60_000,  // 60s betting window
-    predictionLockMs: 5_000,   // 5s locking countdown
-    resolutionMs: 30_000,      // 30s car counting
+    predictionOpenMs: 0,       // Indefinite until manual start
+    predictionLockMs: 0,       // 0s locking countdown (skipped)
+    resolutionMs: 25_000,      // 25s car counting
     rewardMs: 5_000,           // 5s settlement display
   },
   python: { proc: null, lastCount: 0, frames: 0 },
@@ -263,6 +263,15 @@ async function setupChain() {
 async function oracleOpenMarket(junctionId) {
   if (!amberMarket) return { mode: "simulated" };
   try {
+    const currentId = await amberMarket.marketId();
+    if (currentId > 0n) {
+      const m = await amberMarket.markets(currentId);
+      if (m.marketState === 0n) { // 0 = OPEN
+        console.log(`[oracle] Market ${currentId} is already OPEN`);
+        return { mode: "onchain", marketId: Number(currentId) };
+      }
+    }
+
     const tx = await amberMarket.openMarket(ethers.id(junctionId));
     const receipt = await tx.wait();
     const mId = await amberMarket.marketId();
@@ -272,10 +281,18 @@ async function oracleOpenMarket(junctionId) {
     return { mode: "simulated", error: err.message };
   }
 }
-
 async function oracleLockMarket() {
   if (!amberMarket) return { mode: "simulated" };
   try {
+    const currentId = await amberMarket.marketId();
+    if (currentId > 0n) {
+      const m = await amberMarket.markets(currentId);
+      if (m.marketState === 1n) { // 1 = LOCKED
+        console.log(`[oracle] Market ${currentId} is ALREADY LOCKED`);
+        return { mode: "onchain" };
+      }
+    }
+
     const tx = await amberMarket.lockMarket();
     const receipt = await tx.wait();
     return { mode: "onchain", txHash: receipt.hash };
@@ -284,7 +301,6 @@ async function oracleLockMarket() {
     return { mode: "simulated", error: err.message };
   }
 }
-
 async function oracleSubmitCount(count) {
   if (!amberMarket) return { mode: "simulated" };
   try {
@@ -366,7 +382,7 @@ async function transition(next) {
       const openRes = await oracleOpenMarket(engine.activeJunctionId);
       engine.marketId = openRes.marketId ?? engine.marketId;
       io.emit("market:debug", { junctionId: engine.activeJunctionId, message: `PREDICTION_OPEN started` });
-      setTimeout(() => transition(EngineState.PREDICTION_LOCKED).catch(e => console.error("[engine]", e)), engine.countdown.predictionOpenMs);
+      // We now pause here indefinitely until /start-count is called
     }
 
     if (next === EngineState.PREDICTION_LOCKED) {
@@ -399,7 +415,7 @@ async function transition(next) {
     console.error(`[engine] Error during ${next}:`, err.message);
     // Keep engine running — auto-recover
     if (next === EngineState.PREDICTION_OPEN) {
-      setTimeout(() => transition(EngineState.PREDICTION_LOCKED).catch(e => console.error("[engine]", e)), engine.countdown.predictionOpenMs);
+      // Stay open indefinitely if error occurs
     } else if (next === EngineState.PREDICTION_LOCKED) {
       setTimeout(() => transition(EngineState.EVENT_RESOLUTION).catch(e => console.error("[engine]", e)), engine.countdown.predictionLockMs);
     } else if (next === EngineState.EVENT_RESOLUTION) {
@@ -581,6 +597,16 @@ app.post("/api/oracle/lock", async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || "UNKNOWN" });
   }
+});
+
+app.post("/api/market/start-count", async (req, res) => {
+  if (engine.state !== EngineState.PREDICTION_OPEN) {
+    return res.status(400).json({ error: "Market is not currently open for predictions." });
+  }
+  
+  // Transition out of open immediately
+  transition(EngineState.PREDICTION_LOCKED).catch(e => console.error("[engine]", e));
+  res.json({ ok: true, message: "Countdown started" });
 });
 
 app.post("/api/oracle/submit", async (req, res) => {

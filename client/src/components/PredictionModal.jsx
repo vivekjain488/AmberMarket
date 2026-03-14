@@ -1,8 +1,9 @@
 import { useState, useMemo } from "react";
 import { formatUnits } from "viem";
 import { 
-  X, TrendingUp, Zap, AlertCircle, Loader2, Coins, Minus, Plus, Hash, CheckCircle2 
+  X, TrendingUp, Zap, AlertCircle, Loader2, Coins, Minus, Plus, Hash, CheckCircle2, Target
 } from "lucide-react";
+import { useGameMode } from "@/contexts/GameModeContext";
 
 const BET_TYPES = [
   { key: "UNDER", label: "🔽 Under", value: 0, desc: "Win if count < your number" },
@@ -63,6 +64,7 @@ export function PredictionModal({
   txLoading,
   txStatus
 }) {
+  const { isPracticeMode, practiceBalance } = useGameMode();
   const [betType, setBetType] = useState("UNDER");
   const [prediction, setPrediction] = useState(15);
   const [rangeMin, setRangeMin] = useState(10);
@@ -95,6 +97,10 @@ export function PredictionModal({
       stake: stake,
     });
   };
+
+  const isStakeValid = isPracticeMode 
+    ? (stakeNum > 0 && stakeNum <= practiceBalance)
+    : (amberBalance != null && stakeNum > 0 && stakeNum <= Number(formatUnits(amberBalance, 18)));
 
   if (!isOpen) return null;
 
@@ -182,8 +188,10 @@ export function PredictionModal({
           <div className="p-4 rounded-xl bg-black/40 border border-border/50">
             <div className="flex justify-between items-center mb-2">
               <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Stake Amount</label>
-              {amberBalance != null && (
-                <span className="text-[10px] text-amber-400 font-mono">Bal: {Number(formatUnits(amberBalance, 18)).toFixed(2)} Ⓐ</span>
+              {(isPracticeMode ? practiceBalance : amberBalance) != null && (
+                <span className="text-[10px] text-amber-400 font-mono">
+                  Bal: {isPracticeMode ? Number(practiceBalance).toFixed(2) : Number(formatUnits(amberBalance, 18)).toFixed(2)} {isPracticeMode ? 'P-AMBER' : 'Ⓐ'}
+                </span>
               )}
             </div>
             <div className="relative">
@@ -192,7 +200,7 @@ export function PredictionModal({
             </div>
             <div className="flex gap-2 mt-3">
               {["10", "50", "100", "500", "MAX"].map((s) => (
-                <button key={s} className="flex-1 py-1.5 rounded-md text-[10px] font-mono font-bold transition-all bg-secondary/80 hover:bg-secondary border border-border/50 text-foreground" onClick={() => setStake(s === "MAX" ? (amberBalance ? formatUnits(amberBalance, 18).split(".")[0] : "1000") : s)}>{s}</button>
+                <button key={s} className="flex-1 py-1.5 rounded-md text-[10px] font-mono font-bold transition-all bg-secondary/80 hover:bg-secondary border border-border/50 text-foreground" onClick={() => setStake(s === "MAX" ? (isPracticeMode ? Math.floor(practiceBalance).toString() : (amberBalance ? formatUnits(amberBalance, 18).split(".")[0] : "1000")) : s)}>{s}</button>
               ))}
             </div>
           </div>
@@ -216,13 +224,16 @@ export function PredictionModal({
           {/* Place Bet Submit */}
           <button
             onClick={handleBetClick}
-            disabled={txLoading || stakeNum <= 0}
-            className="w-full py-4 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] shadow-md shadow-primary/20"
+            disabled={txLoading || !isStakeValid}
+            className={`w-full py-4 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed ${isPracticeMode ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:shadow-lg hover:shadow-blue-500/20 shadow-md shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]' : 'bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] shadow-md shadow-primary/20'}`}
           >
             {txLoading ? (
-              <span className="flex items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" /> Confirming Transaction…</span>
+              <span className="flex items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" /> {isPracticeMode ? "Recording Practice Bet..." : "Confirming Transaction…"}</span>
             ) : (
-              <span className="flex items-center justify-center gap-2"><Zap className="h-5 w-5" /> Submit Prediction</span>
+              <span className="flex items-center justify-center gap-2">
+                <Zap className="h-5 w-5" /> 
+                {isPracticeMode ? "Submit Practice Prediction" : "Submit Prediction"}
+              </span>
             )}
           </button>
 

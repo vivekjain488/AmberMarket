@@ -6,6 +6,7 @@ import { useAccount, useReadContract } from "wagmi";
 import { formatUnits } from "viem";
 import { config } from "@/lib/config";
 import { erc20Abi } from "@/lib/amberMarketAbi";
+import { useGameMode } from "@/contexts/GameModeContext";
 
 const navLinks = [
   { to: "/", label: "Home", icon: Home },
@@ -42,6 +43,7 @@ export function TerminalShell({ title, children, right }) {
   });
 
   const formattedBalance = amberBalance != null ? Number(formatUnits(amberBalance, 18)).toFixed(0) : "0";
+  const { isPracticeMode, setIsPracticeMode, practiceBalance, practiceNotifications } = useGameMode();
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -102,6 +104,33 @@ export function TerminalShell({ title, children, right }) {
 
             {/* Right: Status + Wallet */}
             <div className="flex items-center gap-3">
+              {/* Practice Toggle */}
+              <div className="hidden sm:flex items-center gap-2 mr-2">
+                <span className={`text-[10px] font-bold uppercase tracking-widest ${!isPracticeMode ? 'text-primary' : 'text-muted-foreground'}`}>
+                  Arena
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsPracticeMode(!isPracticeMode)}
+                  className={`
+                    relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent 
+                    transition-colors duration-200 ease-in-out focus:outline-none 
+                    ${isPracticeMode ? "bg-amber-500" : "bg-primary"}
+                  `}
+                >
+                  <span
+                    className={`
+                      pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 
+                      transition duration-200 ease-in-out
+                      ${isPracticeMode ? "translate-x-4" : "translate-x-0"}
+                    `}
+                  />
+                </button>
+                <span className={`text-[10px] font-bold uppercase tracking-widest ${isPracticeMode ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                  Practice
+                </span>
+              </div>
+              
               {right}
               <ConnectButton.Custom>
                 {({ account, chain, openAccountModal, openChainModal, openConnectModal, authenticationStatus, mounted }) => {
@@ -147,9 +176,16 @@ export function TerminalShell({ title, children, right }) {
                         {chain.name}
                       </button>
 
-                      <div className="flex items-center text-xs font-mono font-bold bg-amber-500/10 border border-amber-500/30 text-amber-500 px-3 py-1.5 rounded-lg">
-                        {formattedBalance} Ⓐ
-                      </div>
+                      {isPracticeMode ? (
+                        <div className="flex items-center text-xs font-mono font-bold bg-amber-500/20 border border-amber-500/40 text-amber-500 px-3 py-1.5 rounded-lg relative overflow-hidden group" title="Practice AMBER (P-AMBER)">
+                          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700" />
+                          {Number(practiceBalance).toFixed(0)} P-Ⓐ
+                        </div>
+                      ) : (
+                        <div className="flex items-center text-xs font-mono font-bold bg-primary/10 border border-primary/30 text-primary px-3 py-1.5 rounded-lg">
+                          {formattedBalance} Ⓐ
+                        </div>
+                      )}
 
                       <button onClick={openAccountModal} type="button" className="flex items-center text-xs font-mono font-bold bg-primary/20 text-primary border border-primary/30 px-3 py-1.5 rounded-lg shadow shadow-primary/10 hover:bg-primary/30 transition-all">
                         {myEns || account.displayName}
@@ -167,6 +203,15 @@ export function TerminalShell({ title, children, right }) {
       <main className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 py-6">
         {children}
       </main>
+
+      {/* ── Practice Notifications ── */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+        {practiceNotifications.map((note) => (
+          <div key={note.id} className="bg-amber-950/90 border border-amber-500/50 text-amber-100 px-4 py-3 rounded-xl shadow-xl shadow-amber-900/20 backdrop-blur-md max-w-sm animate-in slide-in-from-bottom-2 fade-in duration-300">
+            {note.message}
+          </div>
+        ))}
+      </div>
 
       {/* ── Footer ── */}
       <footer className="relative z-10 border-t border-border/40 mt-12">

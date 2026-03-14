@@ -9,12 +9,67 @@ import {
  * Settlement celebration popup.
  * Shows the final car count, winning range, user outcome, and fires confetti.
  */
-export function SettlementModal({ settlement, userPrediction, onDismiss }) {
+export function SettlementModal({ settlement, userPrediction, onDismiss, onClaim }) {
   const [show, setShow] = useState(false);
   const [counting, setCounting] = useState(0);
   const confettiFired = useRef(false);
 
-  // Staggered entrance + confetti burst
+  const parsedFinalCount = Number(settlement?.finalCount);
+  const finalCount = Number.isFinite(parsedFinalCount) ? parsedFinalCount : 0;
+  const parsedToleranceLow = Number(settlement?.toleranceLow);
+  const parsedToleranceHigh = Number(settlement?.toleranceHigh);
+
+  // Some settlement events only provide finalCount. Fall back to ±1.
+  const toleranceLow = Number.isFinite(parsedToleranceLow)
+    ? parsedToleranceLow
+    : Math.max(0, finalCount - 1);
+  const toleranceHigh = Number.isFinite(parsedToleranceHigh)
+    ? parsedToleranceHigh
+    : finalCount + 1;
+
+  // Compute prediction details
+  let predictedDisplay = 0;
+  let isWinner = false;
+  let predLow = 0;
+  let predHigh = 0;
+    let predictedMarkerVal = 0;
+
+    if (userPrediction) {
+      if (typeof userPrediction === "object") {
+        const type = userPrediction.betType;
+        const val = Number(userPrediction.prediction);
+        if (type === "UNDER") {
+          predLow = 0;
+          predHigh = val;
+          predictedDisplay = `< ${val}`;
+          isWinner = finalCount < val;
+          predictedMarkerVal = val / 2;
+        } else if (type === "OVER") {
+          predLow = val;
+          predHigh = val + 100; // arbitrary max visualization
+          predictedDisplay = `> ${val}`;
+          isWinner = finalCount > val;
+          predictedMarkerVal = val + 5;
+        } else if (type === "RANGE") {
+          predLow = Number(userPrediction.rangeMin);
+          predHigh = Number(userPrediction.rangeMax);
+          predictedDisplay = `${predLow}-${predHigh}`;
+          isWinner = finalCount >= predLow && finalCount <= predHigh;
+          predictedMarkerVal = (predLow + predHigh) / 2;
+        } else { // EXACT or default
+          predLow = Math.max(0, val - 1);
+          predHigh = val + 1;
+          predictedDisplay = `${val}`;
+          isWinner = Math.abs(finalCount - val) <= 1;
+          predictedMarkerVal = val;
+        }
+      } else {
+        predictedDisplay = Number(userPrediction) || 0;
+        predictedMarkerVal = Number(userPrediction) || 0;
+        isWinner = predictedDisplay >= toleranceLow && predictedDisplay <= toleranceHigh && predictedDisplay > 0;
+      }
+    }
+
   useEffect(() => {
     if (!settlement) {
       setShow(false);
@@ -27,7 +82,7 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
     const t1 = setTimeout(() => setShow(true), 100);
 
     // Count-up animation for the big number
-    const target = settlement.finalCount;
+    const target = finalCount;
     let current = 0;
     const step = Math.max(1, Math.ceil(target / 30));
     const countInterval = setInterval(() => {
@@ -38,7 +93,7 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
         // Fire confetti when count reaches final number
         if (!confettiFired.current) {
           confettiFired.current = true;
-          fireConfetti();
+          fireConfetti(isWinner);
         }
       }
     }, 50);
@@ -47,18 +102,21 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
       clearTimeout(t1);
       clearInterval(countInterval);
     };
-  }, [settlement]);
+  }, [settlement, finalCount, isWinner]);
 
-  function fireConfetti() {
-    const duration = 3000;
-    const end = Date.now() + duration;
+  function fireConfetti(didWin) {
+    if (!userPrediction) return; // If strictly inspecting, no bet means no confetti
 
-    // Gold/amber burst from center
+    const colors = didWin 
+      ? ["#10b981", "#34d399", "#d1fae5", "#ffffff"] // Green theme
+      : ["#ef4444", "#f87171", "#fee2e2", "#ffffff"]; // Red theme
+
+    // Main burst
     confetti({
       particleCount: 100,
       spread: 100,
       origin: { y: 0.5, x: 0.5 },
-      colors: ["#f59e0b", "#fbbf24", "#d97706", "#ffffff", "#10b981"],
+      colors: colors,
       gravity: 0.8,
       ticks: 200,
     });
@@ -70,29 +128,16 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
         angle: 60,
         spread: 55,
         origin: { x: 0, y: 0.65 },
-        colors: ["#f59e0b", "#fbbf24", "#d97706"],
+        colors: colors,
       });
       confetti({
         particleCount: 60,
         angle: 120,
         spread: 55,
         origin: { x: 1, y: 0.65 },
-        colors: ["#f59e0b", "#fbbf24", "#d97706"],
+        colors: colors,
       });
     }, 400);
-
-    // Final celebration shower
-    setTimeout(() => {
-      confetti({
-        particleCount: 150,
-        spread: 160,
-        origin: { y: 0.35 },
-        colors: ["#f59e0b", "#fbbf24", "#d97706", "#10b981", "#ffffff", "#6366f1"],
-        gravity: 0.6,
-        scalar: 1.2,
-        ticks: 300,
-      });
-    }, 900);
   }
 
   function handleClose() {
@@ -100,24 +145,14 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
     setTimeout(onDismiss, 300);
   }
 
+  function handleActionClick() {
+    if (isWinner && userPrediction && onClaim) {
+      onClaim();
+    }
+    handleClose();
+  }
+
   if (!settlement) return null;
-
-  const parsedFinalCount = Number(settlement?.finalCount);
-  const finalCount = Number.isFinite(parsedFinalCount) ? parsedFinalCount : 0;
-
-  const parsedToleranceLow = Number(settlement?.toleranceLow);
-  const parsedToleranceHigh = Number(settlement?.toleranceHigh);
-
-  // Some settlement events only provide finalCount. Fall back to ±1.
-  const toleranceLow = Number.isFinite(parsedToleranceLow)
-    ? parsedToleranceLow
-    : Math.max(0, finalCount - 1);
-  const toleranceHigh = Number.isFinite(parsedToleranceHigh)
-    ? parsedToleranceHigh
-    : finalCount + 1;
-
-  const predicted = Number(userPrediction) || 0;
-  const isWinner = predicted >= toleranceLow && predicted <= toleranceHigh && predicted > 0;
 
   return (
     <>
@@ -246,11 +281,11 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
                   style={{ left: `${(finalCount / Math.max(toleranceHigh * 1.5, 50)) * 100}%` }}
                 />
                 {/* User's prediction marker */}
-                {predicted > 0 && (
+                {predictedMarkerVal > 0 && (
                   <div
                     className={`absolute h-5 w-1 rounded-full -top-1 transition-all duration-700 ${isWinner ? 'bg-emerald-400 shadow-lg shadow-emerald-500/30' : 'bg-red-400 shadow-lg shadow-red-500/30'}`}
-                    style={{ left: `${(predicted / Math.max(toleranceHigh * 1.5, 50)) * 100}%` }}
-                    title={`Your prediction: ${predicted}`}
+                    style={{ left: `${(predictedMarkerVal / Math.max(toleranceHigh * 1.5, 50)) * 100}%` }}
+                    title={`Your prediction: ${predictedDisplay}`}
                   />
                 )}
               </div>
@@ -261,7 +296,7 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
             </div>
 
             {/* User Result */}
-            {predicted > 0 && (
+            {userPrediction && (
               <div className={`flex items-center gap-3 p-4 rounded-xl border transition-all duration-500 ${
                 show ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'
               } ${isWinner
@@ -276,7 +311,7 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
                     <div>
                       <div className="font-bold text-emerald-400">You Won! 🎉</div>
                       <div className="text-xs text-emerald-400/70 mt-0.5">
-                        Your prediction of <span className="font-mono font-bold">{predicted}</span> was within [{toleranceLow}–{toleranceHigh}]. Claim your payout!
+                        Your prediction of <span className="font-mono font-bold">{predictedDisplay}</span> was within [{toleranceLow}–{toleranceHigh}]. Claim your payout!
                       </div>
                     </div>
                   </>
@@ -288,7 +323,7 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
                     <div>
                       <div className="font-bold text-red-400">Not this time</div>
                       <div className="text-xs text-red-400/70 mt-0.5">
-                        Your prediction of <span className="font-mono font-bold">{predicted}</span> was outside [{toleranceLow}–{toleranceHigh}]. Better luck next round!
+                        Your prediction of <span className="font-mono font-bold">{predictedDisplay}</span> was outside [{toleranceLow}–{toleranceHigh}]. Better luck next round!
                       </div>
                     </div>
                   </>
@@ -300,15 +335,15 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
           {/* ── Footer ── */}
           <div className="px-6 pb-6 pt-3">
             <button
-              onClick={handleClose}
+              onClick={handleActionClick}
               className={`w-full py-3.5 rounded-xl font-bold text-sm transition-all duration-300 ${
-                isWinner && predicted > 0
-                  ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white hover:shadow-lg hover:shadow-emerald-500/20'
-                  : 'bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20'
-              } hover:scale-[1.01] active:scale-[0.99]`}
-            >
-              <span className="flex items-center justify-center gap-2">
-                {isWinner && predicted > 0 ? (
+                  isWinner && userPrediction
+                    ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white hover:shadow-lg hover:shadow-emerald-500/20'
+                    : 'bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20'
+                } hover:scale-[1.01] active:scale-[0.99]`}
+              >
+                <span className="flex items-center justify-center gap-2">
+                  {isWinner && userPrediction ? (
                   <>
                     <Coins className="h-4 w-4" />
                     Claim Winnings Now
@@ -327,3 +362,5 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
     </>
   );
 }
+
+export default SettlementModal;

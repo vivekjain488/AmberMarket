@@ -12,6 +12,7 @@ import { baseSepolia, hardhat, sepolia } from "wagmi/chains";
 
 import "./index.css";
 import App from "./App.jsx";
+import { GameModeProvider } from "./contexts/GameModeContext.jsx";
 
 const queryClient = new QueryClient();
 const preferredChainId = Number(import.meta.env.VITE_CHAIN_ID || sepolia.id);
@@ -37,7 +38,9 @@ createRoot(document.getElementById('root')).render(
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider>
           <BrowserRouter>
-            <App />
+            <GameModeProvider>
+              <App />
+            </GameModeProvider>
           </BrowserRouter>
         </RainbowKitProvider>
       </QueryClientProvider>

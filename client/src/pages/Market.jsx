@@ -5,7 +5,8 @@ import {
   ArrowLeft, Camera, Car, Clock, DollarSign, Eye,
   Landmark, Signal, TrendingUp, Zap, Hash,
   AlertCircle, CheckCircle2, Loader2, ExternalLink,
-  Minus, Plus, Coins, Scale, BarChart3, History, Radio
+  Minus, Plus, Coins, Scale, BarChart3, History, Radio,
+  Send, Shield, Search, ZoomIn, Activity, Video, X, Lock
 } from "lucide-react";
 
 import { TerminalShell } from "@/components/TerminalShell";
@@ -15,9 +16,10 @@ import { PhaseIndicator } from "@/components/PhaseIndicator";
 import { SettlementModal } from "@/components/SettlementModal";
 import { PredictionModal } from "@/components/PredictionModal";
 import { useSocket } from "@/hooks/useSocket";
-import { useAccount, usePublicClient, useWalletClient } from "wagmi";
+import { useGameMode } from "@/contexts/GameModeContext";
+import { useAccount, usePublicClient, useWalletClient, useChainId } from "wagmi";
 import { parseUnits, formatUnits, keccak256, toBytes } from "viem";
-import { config } from "@/lib/config";
+import { config, getChainConfig } from "@/lib/config";
 import { amberMarketAbi, erc20Abi, amberJunctionNftAbi } from "@/lib/amberMarketAbi";
 
 /* ═══════════════════════════════════════════════
@@ -205,6 +207,8 @@ function RoundHistoryRow({ round }) {
    ═══════════════════════════════════════════════ */
 
 export function Market() {
+  const chainId = useChainId();
+  const chainConfig = getChainConfig(chainId);
   const { junctionId } = useParams();
   const {
     connected, hello,
@@ -214,6 +218,7 @@ export function Market() {
     lastBet,
     annotatedFrame,
   } = useSocket();
+  const { isPracticeMode, placePracticeBet } = useGameMode();
 
   const { address } = useAccount();
   const publicClient = usePublicClient();
@@ -344,13 +349,13 @@ export function Market() {
 
   /* ── On-chain pool data reader ── */
   useEffect(() => {
-    if (!publicClient || !config.contractAddress) return;
+    if (!publicClient || !chainConfig.contractAddress) return;
     let cancelled = false;
 
     async function fetchPool() {
       try {
         const data = await publicClient.readContract({
-          address: config.contractAddress,
+          address: chainConfig.contractAddress,
           abi: amberMarketAbi,
           functionName: "getCurrentMarket",
         });
@@ -364,10 +369,10 @@ export function Market() {
       } catch { /* demo mode */ }
 
       // Fetch AMBER balance
-      if (address && config.amberTokenAddress) {
+      if (address && chainConfig.amberTokenAddress) {
         try {
           const bal = await publicClient.readContract({
-            address: config.amberTokenAddress,
+            address: chainConfig.amberTokenAddress,
             abi: erc20Abi,
             functionName: "balanceOf",
             args: [address],
@@ -380,11 +385,11 @@ export function Market() {
     fetchPool();
     const t = setInterval(fetchPool, 8000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [publicClient, config.contractAddress, phase, address]);
+  }, [publicClient, chainConfig.contractAddress, phase, address]);
 
   /* ── NFT Ownership & Gamified Pricing ── */
   useEffect(() => {
-    if (!publicClient || !config.junctionNftAddress || !junctionId) return;
+    if (!publicClient || !chainConfig.junctionNftAddress || !junctionId) return;
 
     let cancelled = false;
     async function fetchNftData() {
@@ -393,7 +398,7 @@ export function Market() {
         if (!junctionKey) return;
 
         const ownerAddr = await publicClient.readContract({
-          address: config.junctionNftAddress,
+          address: chainConfig.junctionNftAddress,
           abi: amberJunctionNftAbi,
           functionName: "getOwnerOfJunction",
           args: [junctionKey]
@@ -417,13 +422,13 @@ export function Market() {
         if (address) {
           try {
             const discountPrice = await publicClient.readContract({
-              address: config.junctionNftAddress,
+              address: chainConfig.junctionNftAddress,
               abi: amberJunctionNftAbi,
               functionName: "getDiscountedPrice",
               args: [junctionKey, address]
             });
             const currentPoints = await publicClient.readContract({
-              address: config.contractAddress,
+              address: chainConfig.contractAddress,
               abi: amberMarketAbi,
               functionName: "userPredictionPoints",
               args: [junctionKey, address]
@@ -441,7 +446,7 @@ export function Market() {
     fetchNftData();
     const t = setInterval(fetchNftData, 15000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [publicClient, config.junctionNftAddress, junctionId, address]);
+  }, [publicClient, chainConfig.junctionNftAddress, junctionId, address]);
 
   /* ── Real-time tick ── */
   useEffect(() => {
@@ -506,6 +511,9 @@ export function Market() {
   const isAnnotatedForThisJunction = annotatedFrame?.junctionId === junctionId;
   const localAnnotatedFrame = isAnnotatedForThisJunction ? annotatedFrame : null;
 
+  const userPredictionStr = typeof window !== 'undefined' ? localStorage.getItem('amber_lastBet_' + junctionId) : null;
+  const userOpt = userPredictionStr ? JSON.parse(userPredictionStr) : null;
+
   const historicalEstimate = useMemo(() => {
     const counts = roundHistory
       .map((round) => Number(round?.finalCount))
@@ -524,9 +532,25 @@ export function Market() {
     
     setTxStatus(null);
     if (!walletClient || !address) return setTxStatus("Connect wallet first.");
+
+    if (isPracticeMode) {
+      setTxLoading(true);
+      try {
+        await new Promise(r => setTimeout(r, 600)); // Simulate slight delay
+        placePracticeBet(junctionId, opts);
+        setTxStatus("✓ Practice bet recorded!");
+        setTimeout(() => setIsPredictionModalOpen(false), 1500);
+      } catch (e) {
+        setTxStatus(e.message || "Practice bet failed");
+      } finally {
+        setTxLoading(false);
+      }
+      return;
+    }
+
     if (!publicClient) return setTxStatus("RPC client unavailable.");
-    if (!config.contractAddress) return setTxStatus("Missing contract address.");
-    if (!config.amberTokenAddress) return setTxStatus("Missing $AMBER token address.");
+    if (!chainConfig.contractAddress) return setTxStatus("Missing contract address.");
+    if (!chainConfig.amberTokenAddress) return setTxStatus("Missing $AMBER token address.");
 
     setTxLoading(true);
     try {
@@ -542,28 +566,28 @@ export function Market() {
 
       // Check network
       const currentChainId = await walletClient.getChainId();
-      if (currentChainId !== config.chainId) {
-        return setTxStatus(`Switch wallet to Chain ID ${config.chainId}.`);
+      if (currentChainId !== 11155111 && currentChainId !== 84532) {
+        return setTxStatus(`Switch wallet to Sepolia or Base Sepolia.`);
       }
 
-      await ensureContractDeployed(config.amberTokenAddress, "$AMBER token contract");
-      await ensureContractDeployed(config.contractAddress, "AmberMarket contract");
+      await ensureContractDeployed(chainConfig.amberTokenAddress, "$AMBER token contract");
+      await ensureContractDeployed(chainConfig.contractAddress, "AmberMarket contract");
 
       // Approve $AMBER
       const allowance = await publicClient.readContract({
-        address: config.amberTokenAddress,
+        address: chainConfig.amberTokenAddress,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [address, config.contractAddress],
+        args: [address, chainConfig.contractAddress],
       });
 
       if (allowance < stakeAmount) {
         setTxStatus("Approving $AMBER…");
         const approveHash = await walletClient.writeContract({
-          address: config.amberTokenAddress,
+          address: chainConfig.amberTokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [config.contractAddress, stakeAmount],
+          args: [chainConfig.contractAddress, stakeAmount],
         });
         await publicClient.waitForTransactionReceipt({ hash: approveHash });
         setTxStatus("$AMBER approved! Placing bet…");
@@ -571,7 +595,7 @@ export function Market() {
 
       // Place bet with 4 args: betType, prediction, rangeMax, stakeAmount
       const hash = await walletClient.writeContract({
-        address: config.contractAddress,
+        address: chainConfig.contractAddress,
         abi: amberMarketAbi,
         functionName: "placeBet",
         args: [betTypeValue, pred, rMax, stakeAmount],
@@ -590,26 +614,68 @@ export function Market() {
   async function claim() {
     setTxStatus(null);
     if (!walletClient || !address) return setTxStatus("Connect wallet first.");
-    if (!config.contractAddress) return setTxStatus("Missing contract address.");
+    
+    if (isPracticeMode) {
+      setTxStatus("Practice winnings are credited automatically.");
+      return;
+    }
+
+    if (!chainConfig.contractAddress) return setTxStatus("Missing contract address.");
 
     setTxLoading(true);
     try {
-      // Get current market ID to claim from
+      // Find the most recent market that is SETTLED and has an unclaimed bet
       const currentMarketId = await publicClient.readContract({
-        address: config.contractAddress,
+        address: chainConfig.contractAddress,
         abi: amberMarketAbi,
         functionName: "marketId",
       });
 
+      let targetMarketId = null;
+      // Check the last 10 markets
+      for (let i = Number(currentMarketId); i > 0 && i >= Number(currentMarketId) - 10; i--) {
+        const bet = await publicClient.readContract({
+          address: chainConfig.contractAddress,
+          abi: amberMarketAbi,
+          functionName: "bets",
+          args: [BigInt(i), address]
+        });
+        
+        // bet: [bettor, betType, prediction, rangeMin, rangeMax, stakeAmount, claimed]
+        // If they placed a bet and it's not claimed yet
+        if (bet[5] > 0n && !bet[6]) {
+          const m = await publicClient.readContract({
+            address: chainConfig.contractAddress,
+            abi: amberMarketAbi,
+            functionName: "markets",
+            args: [BigInt(i)]
+          });
+          // m.marketState is index 3 or so, but let's check if it's 2 (SETTLED)
+          // struct: junctionId, marketState(1), predictionStart(2), predictionEnd(3), settlementCount(4), ...
+          // Just check if it's 2
+          if (m[1] === 2 || m[1] === 2n || Number(m[1]) === 2) {
+             targetMarketId = BigInt(i);
+             break;
+          }
+        }
+      }
+
+      if (!targetMarketId) {
+        setTxStatus("No unclaimed winning bets found.");
+        setTxLoading(false);
+        return;
+      }
+
+      setTxStatus(`Claiming round #${targetMarketId.toString()}...`);
       const hash = await walletClient.writeContract({
-        address: config.contractAddress,
+        address: chainConfig.contractAddress,
         abi: amberMarketAbi,
         functionName: "claimWinnings",
-        args: [currentMarketId],
+        args: [targetMarketId],
       });
       setTxStatus(`Claim submitted! Tx: ${hash.slice(0, 10)}…`);
       await publicClient.waitForTransactionReceipt({ hash });
-      setTxStatus("✓ Claim confirmed!");
+      setTxStatus("✓ Claim confirmed! You received your payout.");
     } catch (e) {
       setTxStatus(e?.shortMessage || e?.message || "Claim failed");
     } finally {
@@ -621,43 +687,43 @@ export function Market() {
     setNftTxStatus(null);
     if (!walletClient || !address) return setNftTxStatus("Connect wallet first.");
     if (!publicClient) return setNftTxStatus("RPC client unavailable.");
-    if (!config.junctionNftAddress || !config.amberTokenAddress) return setNftTxStatus("Missing addresses.");
+    if (!chainConfig.junctionNftAddress || !chainConfig.amberTokenAddress) return setNftTxStatus("Missing addresses.");
     const junctionKey = toJunctionBytes32(junctionId);
     if (!junctionKey) return setNftTxStatus("Invalid junction id.");
 
     setNftTxLoading(true);
     try {
       const currentChainId = await walletClient.getChainId();
-      if (currentChainId !== config.chainId) {
-        setNftTxStatus(`Switch wallet to Chain ID ${config.chainId}.`);
+      if (currentChainId !== 11155111 && currentChainId !== 84532) {
+        setNftTxStatus(`Switch wallet to Sepolia or Base Sepolia.`);
         return;
       }
 
-      await ensureContractDeployed(config.amberTokenAddress, "$AMBER token contract");
-      await ensureContractDeployed(config.junctionNftAddress, "AmberJunctionNFT contract");
+      await ensureContractDeployed(chainConfig.amberTokenAddress, "$AMBER token contract");
+      await ensureContractDeployed(chainConfig.junctionNftAddress, "AmberJunctionNFT contract");
 
       const priceAmount = parseUnits(nftPrice, 18);
       const allowance = await publicClient.readContract({
-        address: config.amberTokenAddress,
+        address: chainConfig.amberTokenAddress,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [address, config.junctionNftAddress],
+        args: [address, chainConfig.junctionNftAddress],
       });
 
       if (allowance < priceAmount) {
         setNftTxStatus("Approving $AMBER...");
         const approveHash = await walletClient.writeContract({
-          address: config.amberTokenAddress,
+          address: chainConfig.amberTokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [config.junctionNftAddress, priceAmount],
+          args: [chainConfig.junctionNftAddress, priceAmount],
         });
         await publicClient.waitForTransactionReceipt({ hash: approveHash });
       }
 
       setNftTxStatus("Purchasing Junction...");
       const hash = await walletClient.writeContract({
-        address: config.junctionNftAddress,
+        address: chainConfig.junctionNftAddress,
         abi: amberJunctionNftAbi,
         functionName: "buyJunction",
         args: [junctionKey],
@@ -689,24 +755,13 @@ export function Market() {
       {/* ── Settlement Popup ── */}
       <SettlementModal
         settlement={newSettlement}
-        userPrediction={null}
+        userPrediction={userOpt}
         onDismiss={dismissSettlement}
+        onClaim={claim}
       />
 
-      {/* ── Prediction Modal ── */}
-      <PredictionModal
-        isOpen={isPredictionModalOpen}
-        onClose={() => {
-          setIsPredictionModalOpen(false);
-          setTxStatus(null);
-        }}
-        historicalEstimate={historicalEstimate}
-        poolTotal={poolTotal}
-        amberBalance={amberBalance}
-        onPlaceBet={placeBet}
-        txLoading={txLoading}
-        txStatus={txStatus}
-      />
+      {/* ── Prediction Flow Replaced ── */}
+      {/* Prediction now entirely happens on the Home page Map markers */}
 
       {/* ── Back nav + Market header ── */}
       <div className="mb-6 animate-fade-in">
@@ -767,12 +822,14 @@ export function Market() {
                   {phaseLabel}
                 </div>
               </div>
-              <CountdownRing
-                timeLeftMs={timeLeftMs}
-                totalMs={totalMs}
-                size={80}
-                strokeWidth={4}
-              />
+              {phase !== "PREDICTION_OPEN" && (
+                <CountdownRing
+                  timeLeftMs={timeLeftMs}
+                  totalMs={totalMs}
+                  size={80}
+                  strokeWidth={4}
+                />
+              )}
             </div>
 
             {bettingOpen && (
@@ -807,7 +864,7 @@ export function Market() {
             )}
           </div>
 
-          {/* ── Prediction CTA ── */}
+          {/* ── Prediction Instruction ── */}
           <div className="glass rounded-xl p-5 relative overflow-hidden group">
             <div className="absolute -inset-2 bg-gradient-to-r from-primary/20 via-amber-500/20 to-primary/20 opacity-0 group-hover:opacity-100 blur-xl transition-all duration-700 pointer-events-none" />
             
@@ -815,18 +872,17 @@ export function Market() {
               <div className="h-12 w-12 rounded-full bg-primary/20 flex items-center justify-center mb-1">
                 <TrendingUp className="h-6 w-6 text-primary" />
               </div>
-              <h2 className="text-xl font-bold">Ready to Predict?</h2>
+              <h2 className="text-xl font-bold">Predict From Map</h2>
               <p className="text-sm text-muted-foreground pb-2 max-w-[280px]">
-                Stake $AMBER and precisely predict the traffic flow to win from the pool.
+                Predictions and betting are now initiated directly from the map on the Home page.
               </p>
               
-              <button
-                className="w-full py-4 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]"
-                onClick={() => setIsPredictionModalOpen(true)}
-                disabled={!bettingOpen}
+              <Link
+                to="/"
+                className="w-full py-4 rounded-xl font-bold text-lg text-center transition-all duration-300 bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]"
               >
-                {bettingOpen ? "Place Prediction" : "Betting Closed"}
-              </button>
+                Go to Map
+              </Link>
 
               <button className="w-full py-2.5 mt-2 rounded-xl font-medium text-sm transition-all duration-200 border border-border bg-secondary/40 text-foreground hover:bg-secondary/60 hover:border-primary/30 disabled:opacity-30 disabled:cursor-not-allowed" onClick={claim} disabled={txLoading}>
                 <span className="flex items-center justify-center gap-2"><Coins className="h-4 w-4" /> Claim Winnings</span>
@@ -1011,7 +1067,18 @@ export function Market() {
             </div>
 
             <div className="relative bg-black/60 overflow-hidden">
-              {localAnnotatedFrame ? (
+              {phase === "PREDICTION_OPEN" ? (
+                <div className="h-[50vh] lg:h-[55vh] flex flex-col items-center justify-center p-6 bg-black/80">
+                  <Lock className="h-10 w-10 text-amber-500/50 mb-4 animate-pulse" />
+                  <p className="text-lg font-bold text-foreground">Live Stream Hidden</p>
+                  <p className="text-sm text-muted-foreground mt-2 max-w-[300px] text-center">
+                    A prediction must be placed on the Home map to unlock the live CCTV stream and trigger the counting phase.
+                  </p>
+                  <Link to="/" className="mt-6 px-6 py-2 bg-gradient-to-r from-emerald-500/20 to-primary/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-sm font-bold shadow-lg hover:bg-emerald-500/30 transition-all">
+                    Unlock on Map
+                  </Link>
+                </div>
+              ) : localAnnotatedFrame ? (
                 <div className="relative h-[50vh] lg:h-[55vh] w-full bg-black flex items-center justify-center">
                   <img
                     src={`data:image/jpeg;base64,${localAnnotatedFrame.frame}`}
@@ -1098,3 +1165,6 @@ export function Market() {
     </TerminalShell>
   );
 }
+
+
+

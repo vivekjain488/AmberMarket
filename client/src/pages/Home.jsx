@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { GoogleMap, OverlayViewF, useJsApiLoader } from "@react-google-maps/api";
 import {
   ArrowRight, MapPin, Signal, Zap, TrendingUp,
@@ -11,10 +11,13 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ENSClaimModal } from "@/components/ENSClaimModal";
 import { Leaderboard } from "@/components/Leaderboard";
 import { useSocket } from "@/hooks/useSocket";
-import { config } from "@/lib/config";
+import { config, getChainConfig } from "@/lib/config";
 import { amberJunctionNftAbi, amberMarketAbi } from "@/lib/amberMarketAbi";
-import { formatUnits, keccak256, toBytes } from "viem";
-import { useAccount, usePublicClient } from "wagmi";
+import { formatUnits, keccak256, toBytes, parseUnits } from "viem";
+import { useAccount, usePublicClient, useWalletClient, useChainId } from "wagmi";
+import { erc20Abi } from "@/lib/amberMarketAbi";
+import { PredictionModal } from "@/components/PredictionModal";
+import { useGameMode } from "@/contexts/GameModeContext";
 
 /* ═══════════════════════════════════════════════
    G O O G L E   M A P S   D A R K   S T Y L E
@@ -63,13 +66,13 @@ function toJunctionBytes32(junctionId) {
    J U N C T I O N   C A R D
    ═══════════════════════════════════════════════ */
 
-function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient, activePoolAmber }) {
+function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient, activePoolAmber, onPredict }) {
   const [ownerEns, setOwnerEns] = useState(null);
   
   // Resolve owner from NFT, then to ENS
   useEffect(() => {
     async function fetchOwner() {
-      if (!config.junctionNftAddress || !publicClient) return;
+      if (!chainConfig.junctionNftAddress || !publicClient) return;
       try {
         const junctionKey = toJunctionBytes32(junction.id);
         if (!junctionKey) {
@@ -78,7 +81,7 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient
         }
 
         const ownerAddr = await publicClient.readContract({
-          address: config.junctionNftAddress,
+          address: chainConfig.junctionNftAddress,
           abi: amberJunctionNftAbi,
           functionName: "getOwnerOfJunction",
           args: [junctionKey]
@@ -98,9 +101,9 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient
   }, [junction.id, publicClient]);
 
   return (
-    <Link
-      to={`/market/${junction.id}`}
-      className="group block glass rounded-xl overflow-hidden transition-all duration-300 hover:border-primary/30 hover:shadow-lg hover:shadow-amber-500/5 glass-hover"
+    <button
+      onClick={() => onPredict(junction)}
+      className="text-left w-full group block glass rounded-xl overflow-hidden transition-all duration-300 hover:border-primary/30 hover:shadow-lg hover:shadow-amber-500/5 glass-hover"
     >
       {/* Thumbnail / Preview */}
       <div className="relative h-32 bg-gradient-to-br from-secondary to-background overflow-hidden">
@@ -178,11 +181,11 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient
             )}
           </div>
           <div className="flex items-center gap-1 text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-            Trade <ChevronRight className="h-3 w-3" />
+            Predict <ChevronRight className="h-3 w-3" />
           </div>
         </div>
       </div>
-    </Link>
+    </button>
   );
 }
 
@@ -191,6 +194,10 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient
    ═══════════════════════════════════════════════ */
 
 export function Home() {
+  const chainId = useChainId();
+  const chainConfig = getChainConfig(chainId);
+  const navigate = useNavigate();
+  const { data: walletClient } = useWalletClient();
   const { isConnected, address } = useAccount();
   const publicClient = usePublicClient();
   const [junctions, setJunctions] = useState([]);
@@ -199,7 +206,123 @@ export function Home() {
   const [showEnsModal, setShowEnsModal] = useState(false);
   const [myEns, setMyEns] = useState(null);
   const [faucetLoading, setFaucetLoading] = useState(false);
+  const [amberBalance, setAmberBalance] = useState(null);
+  const [selectedJunctionForBet, setSelectedJunctionForBet] = useState(null);
+  const [isPredictionModalOpen, setIsPredictionModalOpen] = useState(false);
+  const [txStatus, setTxStatus] = useState(null);
+  const [txLoading, setTxLoading] = useState(false);
+  const { isPracticeMode, placePracticeBet } = useGameMode();
+
   const refreshRef = useRef(null);
+
+  useEffect(() => {
+    if (!publicClient || !address || !chainConfig.amberTokenAddress) {
+      setAmberBalance(null);
+      return;
+    }
+    const fetchBalance = async () => {
+      try {
+        const bal = await publicClient.readContract({
+          address: chainConfig.amberTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: [address]
+        });
+        setAmberBalance(bal);
+      } catch { setAmberBalance(null); }
+    };
+    fetchBalance();
+    const intv = setInterval(fetchBalance, 10000);
+    return () => clearInterval(intv);
+  }, [publicClient, address]);
+
+  const handlePredictClick = (junction) => {
+    setSelectedJunctionForBet(junction);
+    setIsPredictionModalOpen(true);
+    setTxStatus(null);
+  };
+
+  const handlePlaceBet = async (opts) => {
+    if (!selectedJunctionForBet) return;
+    const { betType, prediction, rangeMin, rangeMax, stake } = opts;
+    
+    setTxStatus(null);
+    if (!walletClient || !address) return setTxStatus("Connect wallet first.");
+
+    if (isPracticeMode) {
+      setTxLoading(true);
+      try {
+        await new Promise(r => setTimeout(r, 600)); // Simulate slight delay
+        placePracticeBet(selectedJunctionForBet.id, opts);
+        localStorage.setItem('amber_lastBet_' + selectedJunctionForBet.id, JSON.stringify(opts));
+        setTxStatus("✓ Practice bet recorded!");
+        // Hit backend API to trigger EVENT_RESOLUTION countdown
+        fetch(`${config.serverUrl}/api/market/start-count`, { method: "POST" }).catch(() => {});
+        setTimeout(() => {
+          setIsPredictionModalOpen(false);
+          navigate(`/market/${selectedJunctionForBet.id}`);
+        }, 1500);
+      } catch (e) {
+        setTxStatus(e.message || "Practice bet failed");
+      } finally {
+        setTxLoading(false);
+      }
+      return;
+    }
+
+    if (!publicClient) return setTxStatus("RPC client unavailable.");
+    if (!chainConfig.contractAddress) return setTxStatus("Missing contract address.");
+    if (!chainConfig.amberTokenAddress) return setTxStatus("Missing $AMBER token address.");
+    
+    setTxLoading(true);
+    try {
+      const stakeAmount = parseUnits(stake || "0", 18);
+      if (stakeAmount <= 0n) return setTxStatus("Stake > 0 required.");
+
+      const BET_TYPES = { "UNDER": 0, "OVER": 1, "RANGE": 2, "EXACT": 3 };
+      const betTypeValue = BET_TYPES[betType] ?? 0;
+      const pred = betType === "RANGE" ? rangeMin : Number(prediction);
+      const rMax = betType === "RANGE" ? rangeMax : 0;
+
+      const currentChainId = await walletClient.getChainId();
+      if (currentChainId !== 11155111 && currentChainId !== 84532) {
+        return setTxStatus(`Switch wallet to Sepolia or Base Sepolia.`);
+      }
+
+      const allowance = await publicClient.readContract({
+        address: chainConfig.amberTokenAddress, abi: erc20Abi, functionName: "allowance", args: [address, chainConfig.contractAddress],
+      });
+
+      if (allowance < stakeAmount) {
+        setTxStatus("Approving $AMBER…");
+        const approveHash = await walletClient.writeContract({
+          address: chainConfig.amberTokenAddress, abi: erc20Abi, functionName: "approve", args: [chainConfig.contractAddress, stakeAmount],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        setTxStatus("$AMBER approved! Placing bet…");
+      }
+
+      setTxStatus("Submitting bet to contract…");
+      const hash = await walletClient.writeContract({
+        address: chainConfig.contractAddress, abi: amberMarketAbi, functionName: "placeBet", args: [betTypeValue, pred, rMax, stakeAmount],
+      });
+      setTxStatus(`Bet submitted! Tx: ${hash.slice(0, 10)}…`);
+      await publicClient.waitForTransactionReceipt({ hash });
+      setTxStatus("✓ Bet confirmed on-chain!");
+
+      localStorage.setItem('amber_lastBet_' + selectedJunctionForBet.id, JSON.stringify(opts));
+
+      // Hit backend API to trigger EVENT_RESOLUTION countdown
+      await fetch(`${config.serverUrl}/api/market/start-count`, { method: "POST" });
+
+      setTimeout(() => {
+        setIsPredictionModalOpen(false);
+        navigate(`/market/${selectedJunctionForBet.id}`);
+      }, 1500);
+      
+    } catch (e) {
+      setTxStatus(e?.shortMessage || e?.message || "Bet failed");
+    } finally {
+      setTxLoading(false);
+    }
+  };
 
   const claimFaucet = async () => {
     if (!address) return;
@@ -277,7 +400,7 @@ export function Home() {
 
   // Read active pool size (total staked) for active junction card
   useEffect(() => {
-    if (!publicClient || !config.contractAddress) {
+    if (!publicClient || !chainConfig.contractAddress) {
       setActivePoolAmber(null);
       return;
     }
@@ -286,7 +409,7 @@ export function Home() {
     async function fetchActivePool() {
       try {
         const market = await publicClient.readContract({
-          address: config.contractAddress,
+          address: chainConfig.contractAddress,
           abi: amberMarketAbi,
           functionName: "getCurrentMarket",
         });
@@ -354,6 +477,18 @@ export function Home() {
           onSuccess={(name) => setMyEns(name)} 
         />
       )}
+
+      {/* Prediction Modal */}
+      <PredictionModal
+        isOpen={isPredictionModalOpen}
+        onClose={() => setIsPredictionModalOpen(false)}
+        historicalEstimate={15}
+        poolTotal={activePoolAmber != null ? activePoolAmber : 0}
+        amberBalance={amberBalance}
+        onPlaceBet={handlePlaceBet}
+        txLoading={txLoading}
+        txStatus={txStatus}
+      />
 
       {/* ── Hero Section ── */}
       <section className="relative mb-8 animate-fade-in">
@@ -464,6 +599,7 @@ export function Home() {
                   <div 
                     className="flex flex-col items-center -translate-x-1/2 -translate-y-1/2 group cursor-pointer relative"
                     title={`${j.name} (${j.multiplier_tier}x tier)`}
+                    onClick={() => handlePredictClick(j)}
                   >
                     <div className="absolute inset-0 bg-amber-500/20 rounded-full blur-md group-hover:bg-amber-500/40 transition-colors" />
                     <div className="bg-amber-500 rounded-full h-4 w-4 border-2 border-[#1a1a2e] shadow-lg group-hover:scale-125 transition-transform relative z-10" />
@@ -497,6 +633,7 @@ export function Home() {
                 timeLeftSec={j.id === activeJunctionId ? liveTimeLeftSec : null}
                 publicClient={publicClient}
                 activePoolAmber={j.id === activeJunctionId ? activePoolAmber : null}
+                onPredict={handlePredictClick}
               />
             ))}
 
@@ -516,3 +653,4 @@ export function Home() {
     </TerminalShell>
   );
 }
+
