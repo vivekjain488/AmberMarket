@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { GoogleMap, MarkerF, useJsApiLoader } from "@react-google-maps/api";
+import { GoogleMap, OverlayViewF, useJsApiLoader } from "@react-google-maps/api";
 import {
   ArrowRight, MapPin, Signal, Zap, TrendingUp,
   Radio, ChevronRight, Eye, Clock, Car
@@ -456,18 +456,22 @@ export function Home() {
               }}
             >
               {junctions.map((j) => (
-                <MarkerF
+                <OverlayViewF
                   key={j.id}
                   position={{ lat: j.lat, lng: j.lng }}
-                  title={`${j.name} (${j.multiplier_tier}x tier)`}
-                  label={{
-                    text: `${j.multiplier_tier}x`,
-                    color: "#f59e0b",
-                    fontFamily: "JetBrains Mono, monospace",
-                    fontSize: "11px",
-                    fontWeight: "700",
-                  }}
-                />
+                  mapPaneName={OverlayViewF.OVERLAY_MOUSE_TARGET}
+                >
+                  <div 
+                    className="flex flex-col items-center -translate-x-1/2 -translate-y-1/2 group cursor-pointer relative"
+                    title={`${j.name} (${j.multiplier_tier}x tier)`}
+                  >
+                    <div className="absolute inset-0 bg-amber-500/20 rounded-full blur-md group-hover:bg-amber-500/40 transition-colors" />
+                    <div className="bg-amber-500 rounded-full h-4 w-4 border-2 border-[#1a1a2e] shadow-lg group-hover:scale-125 transition-transform relative z-10" />
+                    <span className="mt-1 px-1.5 py-0.5 bg-[#1a1a2e]/90 backdrop-blur-sm rounded border border-amber-500/30 text-[10px] font-mono font-bold text-amber-500 whitespace-nowrap shadow-xl relative z-10">
+                      {j.multiplier_tier}x
+                    </span>
+                  </div>
+                </OverlayViewF>
               ))}
             </GoogleMap>
           )}

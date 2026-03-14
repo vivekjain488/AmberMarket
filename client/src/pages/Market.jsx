@@ -13,6 +13,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { CountdownRing } from "@/components/CountdownRing";
 import { PhaseIndicator } from "@/components/PhaseIndicator";
 import { SettlementModal } from "@/components/SettlementModal";
+import { PredictionModal } from "@/components/PredictionModal";
 import { useSocket } from "@/hooks/useSocket";
 import { useAccount, usePublicClient, useWalletClient } from "wagmi";
 import { parseUnits, formatUnits, keccak256, toBytes } from "viem";
@@ -223,12 +224,8 @@ export function Market() {
   const [restMarket, setRestMarket] = useState(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Bet type selector
-  const [betType, setBetType] = useState("UNDER");
-  const [prediction, setPrediction] = useState(15);
-  const [rangeMin, setRangeMin] = useState(10);
-  const [rangeMax, setRangeMax] = useState(20);
-  const [stake, setStake] = useState("10");
+  // Prediction Modal state
+  const [isPredictionModalOpen, setIsPredictionModalOpen] = useState(false);
   const [txStatus, setTxStatus] = useState(null);
   const [txLoading, setTxLoading] = useState(false);
   const [amberBalance, setAmberBalance] = useState(null);
@@ -496,51 +493,35 @@ export function Market() {
   /* ── Pool math in $AMBER (18 decimals) ── */
   const poolTotal = poolData?.totalStaked ? Number(formatUnits(poolData.totalStaked, 18)) : null;
   const poolNet = poolData?.netPool ? Number(formatUnits(poolData.netPool, 18)) : null;
-  const stakeNum = Number(stake) || 0;
   const balanceDisplay = amberBalance != null ? Number(formatUnits(amberBalance, 18)).toFixed(2) : null;
 
   /* ── Live data ── */
-  const currentCount = counting?.currentCount ?? restMarket?.python?.currentCount ?? 0;
-  const frameCount = counting?.frameNumber ?? restMarket?.python?.frames ?? 0;
+  const isServerActiveJunction = mergedMarket?.junctionId === junctionId;
+  const currentCount = isServerActiveJunction ? (counting?.currentCount ?? restMarket?.python?.currentCount ?? 0) : 0;
+  const frameCount = isServerActiveJunction ? (counting?.frameNumber ?? restMarket?.python?.frames ?? 0) : 0;
   const lastFinalCount = settled?.finalCount ?? mergedMarket?.lastSettlement?.finalCount;
   const lastLow = settled?.toleranceLow ?? mergedMarket?.lastSettlement?.toleranceLow;
   const lastHigh = settled?.toleranceHigh ?? mergedMarket?.lastSettlement?.toleranceHigh;
+
+  const isAnnotatedForThisJunction = annotatedFrame?.junctionId === junctionId;
+  const localAnnotatedFrame = isAnnotatedForThisJunction ? annotatedFrame : null;
 
   const historicalEstimate = useMemo(() => {
     const counts = roundHistory
       .map((round) => Number(round?.finalCount))
       .filter((value) => Number.isFinite(value));
     if (counts.length === 0 && Number.isFinite(Number(lastFinalCount))) return Number(lastFinalCount);
-    if (counts.length === 0) return Number(prediction) || 0;
+    if (counts.length === 0) return 15;
     return counts.reduce((sum, value) => sum + value, 0) / counts.length;
-  }, [roundHistory, lastFinalCount, prediction]);
-
-  const estimatedPayout = useMemo(() => {
-    return estimatePayoutPreview({
-      betType,
-      prediction: Number(prediction),
-      rangeMin: Number(rangeMin),
-      rangeMax: Number(rangeMax),
-      stake: stakeNum,
-      poolTotal,
-      carEstimate: historicalEstimate,
-    });
-  }, [betType, prediction, rangeMin, rangeMax, stakeNum, poolTotal, historicalEstimate]);
-
-  const estimatedMultiple = useMemo(() => {
-    if (stakeNum <= 0 || estimatedPayout <= 0) return 0;
-    return estimatedPayout / stakeNum;
-  }, [estimatedPayout, stakeNum]);
-
-  const riskProfile = useMemo(() => {
-    return getRiskProfile({ betType, rangeMin, rangeMax });
-  }, [betType, rangeMin, rangeMax]);
+  }, [roundHistory, lastFinalCount]);
 
   /* ═══════════════════════════════════════════════
      A C T I O N S
      ═══════════════════════════════════════════════ */
 
-  async function placeBet() {
+  async function placeBet(opts) {
+    const { betType, prediction, rangeMin, rangeMax, stake } = opts;
+    
     setTxStatus(null);
     if (!walletClient || !address) return setTxStatus("Connect wallet first.");
     if (!publicClient) return setTxStatus("RPC client unavailable.");
@@ -598,6 +579,7 @@ export function Market() {
       setTxStatus(`Bet submitted! Tx: ${hash.slice(0, 10)}…`);
       await publicClient.waitForTransactionReceipt({ hash });
       setTxStatus("✓ Bet confirmed on-chain!");
+      setTimeout(() => setIsPredictionModalOpen(false), 2000);
     } catch (e) {
       setTxStatus(e?.shortMessage || e?.message || "Bet failed");
     } finally {
@@ -707,8 +689,23 @@ export function Market() {
       {/* ── Settlement Popup ── */}
       <SettlementModal
         settlement={newSettlement}
-        userPrediction={prediction}
+        userPrediction={null}
         onDismiss={dismissSettlement}
+      />
+
+      {/* ── Prediction Modal ── */}
+      <PredictionModal
+        isOpen={isPredictionModalOpen}
+        onClose={() => {
+          setIsPredictionModalOpen(false);
+          setTxStatus(null);
+        }}
+        historicalEstimate={historicalEstimate}
+        poolTotal={poolTotal}
+        amberBalance={amberBalance}
+        onPlaceBet={placeBet}
+        txLoading={txLoading}
+        txStatus={txStatus}
       />
 
       {/* ── Back nav + Market header ── */}
@@ -810,125 +807,30 @@ export function Market() {
             )}
           </div>
 
-          {/* ── Prediction Form ── */}
-          <div className="glass rounded-xl p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="h-4 w-4 text-primary" />
-              <span className="text-sm font-semibold">Place Your Bet</span>
-            </div>
-
-            <div className="space-y-4">
-              {/* === Bet Type Tabs === */}
-              <div className="grid grid-cols-4 gap-1 bg-secondary/50 rounded-lg p-1">
-                {BET_TYPES.map((bt) => (
-                  <button
-                    key={bt.key}
-                    className={`py-2 px-1 rounded-md text-xs font-semibold transition-all ${
-                      betType === bt.key
-                        ? 'bg-primary/20 text-primary border border-primary/30 shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
-                    }`}
-                    onClick={() => setBetType(bt.key)}
-                  >
-                    {bt.label}
-                  </button>
-                ))}
+          {/* ── Prediction CTA ── */}
+          <div className="glass rounded-xl p-5 relative overflow-hidden group">
+            <div className="absolute -inset-2 bg-gradient-to-r from-primary/20 via-amber-500/20 to-primary/20 opacity-0 group-hover:opacity-100 blur-xl transition-all duration-700 pointer-events-none" />
+            
+            <div className="relative z-10 flex flex-col items-center justify-center text-center space-y-3 py-2">
+              <div className="h-12 w-12 rounded-full bg-primary/20 flex items-center justify-center mb-1">
+                <TrendingUp className="h-6 w-6 text-primary" />
               </div>
-              <div className="text-[10px] text-muted-foreground">
-                {BET_TYPES.find(b => b.key === betType)?.desc}
-                {betType === "EXACT" && <span className="ml-1 text-amber-400 font-bold">(🔥 2x WEIGHT BONUS)</span>}
-              </div>
-
-              {/* === Input per bet type === */}
-              {(betType === "UNDER" || betType === "OVER" || betType === "EXACT") && (
-                <div>
-                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">
-                    {betType === "UNDER" ? "Cars will be UNDER" : betType === "OVER" ? "Cars will be OVER" : "Exact car count"}
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <button className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30" onClick={() => setPrediction(Math.max(1, Number(prediction) - 1))} disabled={Number(prediction) <= 1}><Minus className="h-4 w-4" /></button>
-                    <div className="flex-1 relative">
-                      <Hash className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <input className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors" type="number" value={prediction} onChange={(e) => setPrediction(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} min={0} max={200} />
-                    </div>
-                    <button className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30" onClick={() => setPrediction(Math.min(200, Number(prediction) + 1))} disabled={Number(prediction) >= 200}><Plus className="h-4 w-4" /></button>
-                  </div>
-                </div>
-              )}
-
-              {betType === "RANGE" && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">Min cars</label>
-                    <input className="w-full rounded-lg bg-secondary/80 border border-border px-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 transition-colors" type="number" value={rangeMin} onChange={(e) => setRangeMin(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">Max cars</label>
-                    <input className="w-full rounded-lg bg-secondary/80 border border-border px-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 transition-colors" type="number" value={rangeMax} onChange={(e) => setRangeMax(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} />
-                  </div>
-                  <div className="text-[10px] text-muted-foreground">Range width: {rangeMax - rangeMin} (max 15)</div>
-                </div>
-              )}
-
-              {/* Quick picks */}
-              <div className="flex gap-2">
-                {[5, 10, 15, 20, 30, 50].map((n) => (
-                  <button key={n} className={`flex-1 py-1.5 rounded-md text-xs font-mono font-medium transition-all ${Number(betType === 'RANGE' ? rangeMin : prediction) === n ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border hover:text-foreground'}`} onClick={() => betType === 'RANGE' ? (setRangeMin(n), setRangeMax(Math.min(200, n + 10))) : setPrediction(n)}>{n}</button>
-                ))}
-              </div>
-
-              {/* Stake input */}
-              <div>
-                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">Stake ($AMBER)</label>
-                <div className="relative">
-                  <Coins className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
-                  <input className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-sm text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors" type="number" step="1" min="1" value={stake} onChange={(e) => setStake(e.target.value)} placeholder="10" />
-                </div>
-                <div className="flex gap-2 mt-2">
-                  {["10", "50", "100", "500", "1000"].map((s) => (
-                    <button key={s} className={`flex-1 py-1 rounded-md text-xs font-mono font-medium transition-all ${stake === s ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border'}`} onClick={() => setStake(s)}>{s}</button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Pool stats */}
-              {(poolTotal != null || stakeNum > 0) && (
-                <div className="glass rounded-lg p-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Pool Info</div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    <div className="flex justify-between"><span className="text-muted-foreground">Total Pool</span><span className="font-mono text-foreground">{poolTotal != null ? `${poolTotal.toFixed(2)} Ⓐ` : '—'}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">Your Stake</span><span className="font-mono text-primary">{stakeNum} Ⓐ</span></div>
-                      <div className="flex justify-between col-span-2"><span className="text-muted-foreground">Est. Payout</span><span className="font-mono text-emerald-400">{estimatedPayout > 0 ? `~${estimatedPayout.toFixed(2)} Ⓐ (${estimatedMultiple.toFixed(2)}x)` : "—"}</span></div>
-                      <div className="flex justify-between col-span-2 items-center"><span className="text-muted-foreground">Risk Level</span><span className="font-mono text-amber-300">{renderRiskBar(riskProfile.fill)} {riskProfile.label}</span></div>
-                  </div>
-                </div>
-              )}
-
-              {/* Place Bet Button */}
+              <h2 className="text-xl font-bold">Ready to Predict?</h2>
+              <p className="text-sm text-muted-foreground pb-2 max-w-[280px]">
+                Stake $AMBER and precisely predict the traffic flow to win from the pool.
+              </p>
+              
               <button
-                className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.01] active:scale-[0.99]"
-                onClick={placeBet}
-                disabled={!bettingOpen || txLoading || stakeNum <= 0}
+                className="w-full py-4 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98]"
+                onClick={() => setIsPredictionModalOpen(true)}
+                disabled={!bettingOpen}
               >
-                {txLoading ? (
-                  <span className="flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Confirming…</span>
-                ) : !bettingOpen ? ("Betting Closed") : (
-                  <>{betType === "RANGE" ? `Range [${rangeMin}–${rangeMax}]` : `${betType} ${prediction}`} — {stake} $AMBER</>
-                )}
+                {bettingOpen ? "Place Prediction" : "Betting Closed"}
               </button>
 
-              {/* Claim Button */}
-              <button className="w-full py-2.5 rounded-xl font-medium text-sm transition-all duration-200 border border-border bg-secondary/40 text-foreground hover:bg-secondary/60 hover:border-primary/30 disabled:opacity-30 disabled:cursor-not-allowed" onClick={claim} disabled={txLoading}>
+              <button className="w-full py-2.5 mt-2 rounded-xl font-medium text-sm transition-all duration-200 border border-border bg-secondary/40 text-foreground hover:bg-secondary/60 hover:border-primary/30 disabled:opacity-30 disabled:cursor-not-allowed" onClick={claim} disabled={txLoading}>
                 <span className="flex items-center justify-center gap-2"><Coins className="h-4 w-4" /> Claim Winnings</span>
               </button>
-
-              {/* Tx Status */}
-              {txStatus && (
-                <div className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2.5 ${txStatus.includes("✓") ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20' : txStatus.includes("Tx:") ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20' : 'text-red-400 bg-red-500/10 border border-red-500/20'}`}>
-                  {txStatus.includes("✓") ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
-                  <span className="break-all">{txStatus}</span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -1109,10 +1011,10 @@ export function Market() {
             </div>
 
             <div className="relative bg-black/60 overflow-hidden">
-              {annotatedFrame ? (
+              {localAnnotatedFrame ? (
                 <div className="relative h-[50vh] lg:h-[55vh] w-full bg-black flex items-center justify-center">
                   <img
-                    src={`data:image/jpeg;base64,${annotatedFrame.frame}`}
+                    src={`data:image/jpeg;base64,${localAnnotatedFrame.frame}`}
                     alt="CV Annotated Frame"
                     className="max-h-full max-w-full object-contain"
                   />
@@ -1150,17 +1052,6 @@ export function Market() {
                   <div className="text-center">
                     <Camera className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
                     <p className="text-sm text-muted-foreground">No stream configured</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Live count overlay */}
-              {phase === "EVENT_RESOLUTION" && !annotatedFrame && (
-                <div className="absolute top-4 right-4 glass rounded-xl px-4 py-3 flex items-center gap-3">
-                  <Car className="h-5 w-5 text-primary" />
-                  <div>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wider">Count</div>
-                    <div className="font-mono text-xl font-bold text-primary">{currentCount}</div>
                   </div>
                 </div>
               )}
