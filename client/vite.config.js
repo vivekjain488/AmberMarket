@@ -15,3 +15,4 @@ export default defineConfig({
     },
   },
 })
+// Trigger Vite restart

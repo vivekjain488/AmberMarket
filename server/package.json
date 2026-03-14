@@ -12,6 +12,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@thenamespace/offchain-manager": "^1.0.12",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "ethers": "^6.15.0",

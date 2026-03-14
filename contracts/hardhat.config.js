@@ -9,8 +9,9 @@ const isValidKey = /^(0x)?[0-9a-fA-F]{64}$/.test(deployKey);
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
-    version: "0.8.20",
+    version: "0.8.24",
     settings: {
+      evmVersion: "cancun",
       optimizer: {
         enabled: true,
         runs: 200,
@@ -36,6 +37,11 @@ module.exports = {
       url: BASE_SEPOLIA_RPC || "https://sepolia.base.org",
       accounts: isValidKey ? [`0x${deployKey.replace(/^0x/, "")}`] : [],
       chainId: 84532,
+    },
+    sepolia: {
+      url: "https://1rpc.io/sepolia",
+      accounts: isValidKey ? [`0x${deployKey.replace(/^0x/, "")}`] : [],
+      chainId: 11155111,
     },
     // hardhat: {
     //   // This is the default network when you run `npx hardhat test`

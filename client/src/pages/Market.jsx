@@ -5,7 +5,7 @@ import {
   ArrowLeft, Camera, Car, Clock, DollarSign, Eye,
   Landmark, Signal, TrendingUp, Zap, Hash,
   AlertCircle, CheckCircle2, Loader2, ExternalLink,
-  Minus, Plus, Coins, Scale, BarChart3, History
+  Minus, Plus, Coins, Scale, BarChart3, History, Radio
 } from "lucide-react";
 
 import { TerminalShell } from "@/components/TerminalShell";
@@ -14,11 +14,10 @@ import { CountdownRing } from "@/components/CountdownRing";
 import { PhaseIndicator } from "@/components/PhaseIndicator";
 import { SettlementModal } from "@/components/SettlementModal";
 import { useSocket } from "@/hooks/useSocket";
-import { config } from "@/lib/config";
-import { amberMarketAbi } from "@/lib/amberMarketAbi";
-
 import { useAccount, usePublicClient, useWalletClient } from "wagmi";
-import { parseUnits, formatUnits } from "viem";
+import { parseUnits, formatUnits, keccak256, toBytes } from "viem";
+import { config } from "@/lib/config";
+import { amberMarketAbi, erc20Abi, amberJunctionNftAbi } from "@/lib/amberMarketAbi";
 
 /* ═══════════════════════════════════════════════
    H E L P E R S
@@ -42,6 +41,65 @@ function toYouTubeEmbedUrl(url) {
 
 function isHlsUrl(url) {
   return typeof url === "string" && (url.includes(".m3u8") || url.includes("playlist.m3u8"));
+}
+
+function toJunctionBytes32(junctionId) {
+  if (!junctionId) return null;
+  if (/^0x[0-9a-fA-F]{64}$/.test(junctionId)) return junctionId;
+  return keccak256(toBytes(junctionId));
+}
+
+const BET_TYPES = [
+  { key: "UNDER", label: "🔽 Under", value: 0, desc: "Win if count < your number" },
+  { key: "OVER",  label: "🔼 Over",  value: 1, desc: "Win if count > your number" },
+  { key: "RANGE", label: "↔️ Range", value: 2, desc: "Win if count is in your range" },
+  { key: "EXACT", label: "🎯 Exact", value: 3, desc: "Win if count ≈ your number (±1)" },
+];
+
+function estimatePayoutPreview({ betType, prediction, rangeMin, rangeMax, stake, poolTotal, carEstimate }) {
+  const normalizedStake = Number(stake) || 0;
+  const normalizedPool = Number(poolTotal) || 0;
+  const estimate = Number(carEstimate) || 0;
+  if (normalizedStake <= 0 || normalizedPool <= 0) return 0;
+
+  let score = 0;
+  if (betType === "UNDER" && estimate < prediction) {
+    score = (prediction - estimate) / Math.max(1, prediction);
+  } else if (betType === "OVER" && estimate > prediction) {
+    score = (estimate - prediction) / Math.max(1, estimate);
+  } else if (betType === "RANGE") {
+    score = estimate >= rangeMin && estimate <= rangeMax ? 1.0 : 0.6;
+  } else if (betType === "EXACT") {
+    const diff = Math.abs(estimate - prediction);
+    score = diff <= 1 ? 2.0 : diff <= 3 ? 0.75 : 0;
+  }
+
+  if (score <= 0) return 0;
+
+  const playerWeight = normalizedStake * score;
+  const estimatedFieldWeight = Math.max(playerWeight, normalizedPool * 0.75);
+  const effectivePool = normalizedPool * 0.965;
+  return (playerWeight / estimatedFieldWeight) * effectivePool;
+}
+
+function getRiskProfile({ betType, rangeMin, rangeMax }) {
+  if (betType === "EXACT") {
+    return { label: "HIGH", fill: 9 };
+  }
+
+  if (betType === "RANGE") {
+    const width = Math.max(0, Number(rangeMax) - Number(rangeMin));
+    if (width >= 10) return { label: "LOW", fill: 3 };
+    if (width >= 6) return { label: "MODERATE", fill: 6 };
+    return { label: "HIGH", fill: 8 };
+  }
+
+  return { label: "MODERATE", fill: 6 };
+}
+
+function renderRiskBar(fill) {
+  const clamped = Math.max(0, Math.min(10, fill));
+  return `${"█".repeat(clamped)}${"░".repeat(10 - clamped)}`;
 }
 
 /** Auto‑tolerance: the server uses ±15 %, so we mirror that for the UI preview. */
@@ -162,20 +220,43 @@ export function Market() {
 
   /* ── Local state ── */
   const [junction, setJunction] = useState(null);
-  const [restMarket, setRestMarket] = useState(null);  // initial REST fetch
+  const [restMarket, setRestMarket] = useState(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Prediction = single number
+  // Bet type selector
+  const [betType, setBetType] = useState("UNDER");
   const [prediction, setPrediction] = useState(15);
-  const [stake, setStake] = useState("1");
+  const [rangeMin, setRangeMin] = useState(10);
+  const [rangeMax, setRangeMax] = useState(20);
+  const [stake, setStake] = useState("10");
   const [txStatus, setTxStatus] = useState(null);
   const [txLoading, setTxLoading] = useState(false);
+  const [amberBalance, setAmberBalance] = useState(null);
 
   // On-chain pool data
   const [poolData, setPoolData] = useState(null);
 
   // Round history (kept locally from settlement events)
   const [roundHistory, setRoundHistory] = useState([]);
+  
+  // Live bets
+  const [liveBets, setLiveBets] = useState([]);
+
+  // NFT State
+  const [junctionOwner, setJunctionOwner] = useState(null);
+  const [myPoints, setMyPoints] = useState(0);
+  const [nftPrice, setNftPrice] = useState("100");
+  const [nftTxLoading, setNftTxLoading] = useState(false);
+  const [nftTxStatus, setNftTxStatus] = useState(null);
+
+  const ensureContractDeployed = useCallback(async (contractAddress, label) => {
+    if (!publicClient) throw new Error("RPC client unavailable.");
+    if (!contractAddress) throw new Error(`Missing ${label} address.`);
+    const bytecode = await publicClient.getBytecode({ address: contractAddress });
+    if (!bytecode || bytecode === "0x") {
+      throw new Error(`${label} is not deployed on the currently connected network.`);
+    }
+  }, [publicClient]);
 
   /* ── Fetch junction info ── */
   useEffect(() => {
@@ -245,8 +326,24 @@ export function Market() {
         const entry = { ...settled, atMs: Date.now() };
         return [entry, ...prev].slice(0, 10);
       });
+      // Clear live bets on settlement
+      setLiveBets([]);
     }
   }, [settled]);
+
+  /* ── Track socket live bets and resolve ENS ── */
+  useEffect(() => {
+    if (lastBet) {
+      fetch(`${config.serverUrl}/api/ens/lookup/${lastBet.bettor}`)
+        .then(r => r.json())
+        .then(d => {
+          setLiveBets(prev => [{ ...lastBet, ensName: d.name }, ...prev].slice(0, 15));
+        })
+        .catch(() => {
+          setLiveBets(prev => [lastBet, ...prev].slice(0, 15));
+        });
+    }
+  }, [lastBet]);
 
   /* ── On-chain pool data reader ── */
   useEffect(() => {
@@ -263,25 +360,91 @@ export function Market() {
         if (!cancelled) {
           setPoolData({
             totalStaked: data.totalStaked,
-            totalWinningStaked: data.totalWinningStaked,
             netPool: data.netPool,
-            toleranceLow: Number(data.toleranceLow),
-            toleranceHigh: Number(data.toleranceHigh),
             settlementCount: Number(data.settlementCount),
           });
         }
-      } catch {
-        // Contract not deployed or no provider — run in demo mode
+      } catch { /* demo mode */ }
+
+      // Fetch AMBER balance
+      if (address && config.amberTokenAddress) {
+        try {
+          const bal = await publicClient.readContract({
+            address: config.amberTokenAddress,
+            abi: erc20Abi,
+            functionName: "balanceOf",
+            args: [address],
+          });
+          if (!cancelled) setAmberBalance(bal);
+        } catch { /* ignore */ }
       }
     }
 
     fetchPool();
-    const t = setInterval(fetchPool, 10000); // poll every 10s
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [publicClient, config.contractAddress, phase]);
+    const t = setInterval(fetchPool, 8000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [publicClient, config.contractAddress, phase, address]);
+
+  /* ── NFT Ownership & Gamified Pricing ── */
+  useEffect(() => {
+    if (!publicClient || !config.junctionNftAddress || !junctionId) return;
+
+    let cancelled = false;
+    async function fetchNftData() {
+      try {
+        const junctionKey = toJunctionBytes32(junctionId);
+        if (!junctionKey) return;
+
+        const ownerAddr = await publicClient.readContract({
+          address: config.junctionNftAddress,
+          abi: amberJunctionNftAbi,
+          functionName: "getOwnerOfJunction",
+          args: [junctionKey]
+        });
+        
+        if (!cancelled) {
+          if (ownerAddr !== "0x0000000000000000000000000000000000000000") {
+            try {
+              const res = await fetch(`${config.serverUrl}/api/ens/lookup/${ownerAddr}`);
+              const data = await res.json();
+              setJunctionOwner(data.name || `${ownerAddr.slice(0,6)}...${ownerAddr.slice(-4)}`);
+            } catch {
+              setJunctionOwner(`${ownerAddr.slice(0,6)}...${ownerAddr.slice(-4)}`);
+            }
+          } else {
+            setJunctionOwner(null);
+          }
+        }
+
+        // Fetch User Skills & Discounts
+        if (address) {
+          try {
+            const discountPrice = await publicClient.readContract({
+              address: config.junctionNftAddress,
+              abi: amberJunctionNftAbi,
+              functionName: "getDiscountedPrice",
+              args: [junctionKey, address]
+            });
+            const currentPoints = await publicClient.readContract({
+              address: config.contractAddress,
+              abi: amberMarketAbi,
+              functionName: "userPredictionPoints",
+              args: [junctionKey, address]
+            });
+            if (!cancelled) {
+              setNftPrice(formatUnits(discountPrice, 18));
+              setMyPoints(Number(currentPoints));
+            }
+          } catch { /* ignore */ }
+        }
+      } catch (err) {
+        console.error("NFT fetch error:", err);
+      }
+    }
+    fetchNftData();
+    const t = setInterval(fetchNftData, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [publicClient, config.junctionNftAddress, junctionId, address]);
 
   /* ── Real-time tick ── */
   useEffect(() => {
@@ -298,51 +461,43 @@ export function Market() {
   }, [restMarket, socketMarket]);
 
   const stateSinceMs = mergedMarket?.stateSinceMs || nowMs;
-  const countdown = mergedMarket?.countdown || { redMs: 30000, greenMs: 20000, settleMs: 3000 };
+  const countdown = mergedMarket?.countdown || { predictionOpenMs: 60000, predictionLockMs: 5000, resolutionMs: 30000, rewardMs: 5000 };
 
   /* ── Time left (recomputed every tick) ── */
   const timeLeftMs = useMemo(() => {
-    if (phase === "RED_OPEN") return msLeft(stateSinceMs, countdown.redMs);
-    if (phase === "GREEN_COUNTING") return msLeft(stateSinceMs, countdown.greenMs);
-    if (phase === "SETTLING") return msLeft(stateSinceMs, countdown.settleMs || 3000);
+    if (phase === "PREDICTION_OPEN") return msLeft(stateSinceMs, countdown.predictionOpenMs);
+    if (phase === "PREDICTION_LOCKED") return msLeft(stateSinceMs, countdown.predictionLockMs);
+    if (phase === "EVENT_RESOLUTION") return msLeft(stateSinceMs, countdown.resolutionMs);
+    if (phase === "REWARD_DISTRIBUTION") return msLeft(stateSinceMs, countdown.rewardMs);
     return 0;
   }, [phase, stateSinceMs, countdown, nowMs]);
 
   const totalMs = useMemo(() => {
-    if (phase === "RED_OPEN") return countdown.redMs;
-    if (phase === "GREEN_COUNTING") return countdown.greenMs;
-    if (phase === "SETTLING") return countdown.settleMs || 3000;
+    if (phase === "PREDICTION_OPEN") return countdown.predictionOpenMs;
+    if (phase === "PREDICTION_LOCKED") return countdown.predictionLockMs;
+    if (phase === "EVENT_RESOLUTION") return countdown.resolutionMs;
+    if (phase === "REWARD_DISTRIBUTION") return countdown.rewardMs;
     return 1;
   }, [phase, countdown]);
 
   const phaseLabel = useMemo(() => {
     switch (phase) {
-      case "RED_OPEN": return "Betting Open";
-      case "GREEN_COUNTING": return "Counting Cars";
-      case "SETTLING": return "Settling";
+      case "PREDICTION_OPEN": return "Betting Open";
+      case "PREDICTION_LOCKED": return "Bets Locked";
+      case "EVENT_RESOLUTION": return "Counting Cars";
+      case "REWARD_DISTRIBUTION": return "Settling";
       case "IDLE": return "Starting…";
       default: return "Connecting…";
     }
   }, [phase]);
 
-  /* ── Prediction to range conversion ── */
-  const predRange = useMemo(() => computeRange(prediction), [prediction]);
+  const bettingOpen = phase === "PREDICTION_OPEN";
 
-  /* ── Pool math in USDC ── */
-  const poolTotal = poolData?.totalStaked ? Number(formatUnits(poolData.totalStaked, 6)) : null;
-  const poolNet = poolData?.netPool ? Number(formatUnits(poolData.netPool, 6)) : null;
-  const poolWinning = poolData?.totalWinningStaked ? Number(formatUnits(poolData.totalWinningStaked, 6)) : null;
-
-  // Leverage = pool / your stake (how many x your money is worth if you win)
+  /* ── Pool math in $AMBER (18 decimals) ── */
+  const poolTotal = poolData?.totalStaked ? Number(formatUnits(poolData.totalStaked, 18)) : null;
+  const poolNet = poolData?.netPool ? Number(formatUnits(poolData.netPool, 18)) : null;
   const stakeNum = Number(stake) || 0;
-  const leverage = poolTotal && stakeNum > 0 && poolWinning && poolWinning > 0
-    ? ((poolTotal / poolWinning) * 1).toFixed(2)
-    : null;
-
-  // Potential payout = (your_stake / total_winning_staked) * total_pool
-  const potentialPayout = poolTotal && poolWinning && poolWinning > 0 && stakeNum > 0
-    ? ((stakeNum / poolWinning) * poolTotal).toFixed(2)
-    : null;
+  const balanceDisplay = amberBalance != null ? Number(formatUnits(amberBalance, 18)).toFixed(2) : null;
 
   /* ── Live data ── */
   const currentCount = counting?.currentCount ?? restMarket?.python?.currentCount ?? 0;
@@ -351,6 +506,36 @@ export function Market() {
   const lastLow = settled?.toleranceLow ?? mergedMarket?.lastSettlement?.toleranceLow;
   const lastHigh = settled?.toleranceHigh ?? mergedMarket?.lastSettlement?.toleranceHigh;
 
+  const historicalEstimate = useMemo(() => {
+    const counts = roundHistory
+      .map((round) => Number(round?.finalCount))
+      .filter((value) => Number.isFinite(value));
+    if (counts.length === 0 && Number.isFinite(Number(lastFinalCount))) return Number(lastFinalCount);
+    if (counts.length === 0) return Number(prediction) || 0;
+    return counts.reduce((sum, value) => sum + value, 0) / counts.length;
+  }, [roundHistory, lastFinalCount, prediction]);
+
+  const estimatedPayout = useMemo(() => {
+    return estimatePayoutPreview({
+      betType,
+      prediction: Number(prediction),
+      rangeMin: Number(rangeMin),
+      rangeMax: Number(rangeMax),
+      stake: stakeNum,
+      poolTotal,
+      carEstimate: historicalEstimate,
+    });
+  }, [betType, prediction, rangeMin, rangeMax, stakeNum, poolTotal, historicalEstimate]);
+
+  const estimatedMultiple = useMemo(() => {
+    if (stakeNum <= 0 || estimatedPayout <= 0) return 0;
+    return estimatedPayout / stakeNum;
+  }, [estimatedPayout, stakeNum]);
+
+  const riskProfile = useMemo(() => {
+    return getRiskProfile({ betType, rangeMin, rangeMax });
+  }, [betType, rangeMin, rangeMax]);
+
   /* ═══════════════════════════════════════════════
      A C T I O N S
      ═══════════════════════════════════════════════ */
@@ -358,18 +543,57 @@ export function Market() {
   async function placeBet() {
     setTxStatus(null);
     if (!walletClient || !address) return setTxStatus("Connect wallet first.");
+    if (!publicClient) return setTxStatus("RPC client unavailable.");
     if (!config.contractAddress) return setTxStatus("Missing contract address.");
-    if (Number(prediction) <= 0) return setTxStatus("Enter a valid prediction.");
+    if (!config.amberTokenAddress) return setTxStatus("Missing $AMBER token address.");
 
     setTxLoading(true);
     try {
-      const { min, max } = computeRange(prediction);
-      const stakeAmount = parseUnits(stake || "0", 6);
+      const stakeAmount = parseUnits(stake || "0", 18);
+      if (stakeAmount <= 0n) {
+        setTxStatus("Stake must be greater than 0.");
+        return;
+      }
+
+      const betTypeValue = BET_TYPES.find(b => b.key === betType)?.value ?? 0;
+      const pred = betType === "RANGE" ? rangeMin : Number(prediction);
+      const rMax = betType === "RANGE" ? rangeMax : 0;
+
+      // Check network
+      const currentChainId = await walletClient.getChainId();
+      if (currentChainId !== config.chainId) {
+        return setTxStatus(`Switch wallet to Chain ID ${config.chainId}.`);
+      }
+
+      await ensureContractDeployed(config.amberTokenAddress, "$AMBER token contract");
+      await ensureContractDeployed(config.contractAddress, "AmberMarket contract");
+
+      // Approve $AMBER
+      const allowance = await publicClient.readContract({
+        address: config.amberTokenAddress,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [address, config.contractAddress],
+      });
+
+      if (allowance < stakeAmount) {
+        setTxStatus("Approving $AMBER…");
+        const approveHash = await walletClient.writeContract({
+          address: config.amberTokenAddress,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [config.contractAddress, stakeAmount],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        setTxStatus("$AMBER approved! Placing bet…");
+      }
+
+      // Place bet with 4 args: betType, prediction, rangeMax, stakeAmount
       const hash = await walletClient.writeContract({
         address: config.contractAddress,
         abi: amberMarketAbi,
         functionName: "placeBet",
-        args: [min, max, stakeAmount],
+        args: [betTypeValue, pred, rMax, stakeAmount],
       });
       setTxStatus(`Bet submitted! Tx: ${hash.slice(0, 10)}…`);
       await publicClient.waitForTransactionReceipt({ hash });
@@ -388,11 +612,18 @@ export function Market() {
 
     setTxLoading(true);
     try {
+      // Get current market ID to claim from
+      const currentMarketId = await publicClient.readContract({
+        address: config.contractAddress,
+        abi: amberMarketAbi,
+        functionName: "marketId",
+      });
+
       const hash = await walletClient.writeContract({
         address: config.contractAddress,
         abi: amberMarketAbi,
         functionName: "claimWinnings",
-        args: [],
+        args: [currentMarketId],
       });
       setTxStatus(`Claim submitted! Tx: ${hash.slice(0, 10)}…`);
       await publicClient.waitForTransactionReceipt({ hash });
@@ -401,6 +632,61 @@ export function Market() {
       setTxStatus(e?.shortMessage || e?.message || "Claim failed");
     } finally {
       setTxLoading(false);
+    }
+  }
+
+  async function buyNft() {
+    setNftTxStatus(null);
+    if (!walletClient || !address) return setNftTxStatus("Connect wallet first.");
+    if (!publicClient) return setNftTxStatus("RPC client unavailable.");
+    if (!config.junctionNftAddress || !config.amberTokenAddress) return setNftTxStatus("Missing addresses.");
+    const junctionKey = toJunctionBytes32(junctionId);
+    if (!junctionKey) return setNftTxStatus("Invalid junction id.");
+
+    setNftTxLoading(true);
+    try {
+      const currentChainId = await walletClient.getChainId();
+      if (currentChainId !== config.chainId) {
+        setNftTxStatus(`Switch wallet to Chain ID ${config.chainId}.`);
+        return;
+      }
+
+      await ensureContractDeployed(config.amberTokenAddress, "$AMBER token contract");
+      await ensureContractDeployed(config.junctionNftAddress, "AmberJunctionNFT contract");
+
+      const priceAmount = parseUnits(nftPrice, 18);
+      const allowance = await publicClient.readContract({
+        address: config.amberTokenAddress,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [address, config.junctionNftAddress],
+      });
+
+      if (allowance < priceAmount) {
+        setNftTxStatus("Approving $AMBER...");
+        const approveHash = await walletClient.writeContract({
+          address: config.amberTokenAddress,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [config.junctionNftAddress, priceAmount],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      }
+
+      setNftTxStatus("Purchasing Junction...");
+      const hash = await walletClient.writeContract({
+        address: config.junctionNftAddress,
+        abi: amberJunctionNftAbi,
+        functionName: "buyJunction",
+        args: [junctionKey],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+      setNftTxStatus("✓ Junction Acquired!");
+      setJunctionOwner("You");
+    } catch (e) {
+      setNftTxStatus(e?.shortMessage || e?.message || "NFT purchase failed");
+    } finally {
+      setNftTxLoading(false);
     }
   }
 
@@ -443,6 +729,11 @@ export function Market() {
             <p className="text-sm text-muted-foreground mt-1">{junction?.description}</p>
           </div>
           <div className="flex items-center gap-3">
+            {junctionOwner ? (
+              <div className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-sm font-bold font-mono shadow-lg shadow-emerald-500/5">
+                👑 Owned by: <span className="text-white">{junctionOwner}</span>
+              </div>
+            ) : null}
             <div className="px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary text-sm font-bold font-mono">
               {junction?.multiplier_tier || 1}x Multiplier
             </div>
@@ -470,9 +761,10 @@ export function Market() {
                   Current Phase
                 </div>
                 <div className={`text-lg font-bold ${
-                  phase === "RED_OPEN" ? "text-red-400" :
-                  phase === "GREEN_COUNTING" ? "text-emerald-400" :
-                  phase === "SETTLING" ? "text-amber-400" :
+                  bettingOpen ? "text-emerald-400" :
+                  phase === "PREDICTION_LOCKED" ? "text-red-400" :
+                  phase === "EVENT_RESOLUTION" ? "text-amber-400" :
+                  phase === "REWARD_DISTRIBUTION" ? "text-primary" :
                   "text-muted-foreground"
                 }`}>
                   {phaseLabel}
@@ -486,22 +778,34 @@ export function Market() {
               />
             </div>
 
-            {phase === "RED_OPEN" && (
+            {bettingOpen && (
               <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2">
                 <Zap className="h-3.5 w-3.5" />
-                Betting is open! Predict the number of cars now.
+                Betting is open! Place your prediction now.
               </div>
             )}
-            {phase === "GREEN_COUNTING" && (
+            {phase === "PREDICTION_LOCKED" && (
+              <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Bets locked — counting starts soon.
+              </div>
+            )}
+            {phase === "EVENT_RESOLUTION" && (
               <div className="flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
                 <Eye className="h-3.5 w-3.5" />
-                Light is green — counting cars from CCTV.
+                Counting cars from CCTV feed…
               </div>
             )}
-            {phase === "SETTLING" && (
+            {phase === "REWARD_DISTRIBUTION" && (
               <div className="flex items-center gap-2 text-xs text-primary bg-primary/10 border border-primary/20 rounded-lg px-3 py-2">
                 <Landmark className="h-3.5 w-3.5" />
                 Market settling — results momentarily.
+              </div>
+            )}
+            {balanceDisplay && (
+              <div className="flex items-center gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 mt-2">
+                <Coins className="h-3.5 w-3.5" />
+                Balance: <strong className="font-mono">{balanceDisplay} $AMBER</strong>
               </div>
             )}
           </div>
@@ -510,119 +814,79 @@ export function Market() {
           <div className="glass rounded-xl p-5">
             <div className="flex items-center gap-2 mb-4">
               <TrendingUp className="h-4 w-4 text-primary" />
-              <span className="text-sm font-semibold">Your Prediction</span>
+              <span className="text-sm font-semibold">Place Your Bet</span>
             </div>
 
             <div className="space-y-4">
-              {/* === Single prediction number input === */}
-              <div>
-                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">
-                  How many cars will cross?
-                </label>
-                <div className="flex items-center gap-2">
+              {/* === Bet Type Tabs === */}
+              <div className="grid grid-cols-4 gap-1 bg-secondary/50 rounded-lg p-1">
+                {BET_TYPES.map((bt) => (
                   <button
-                    className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30"
-                    onClick={() => setPrediction(Math.max(0, Number(prediction) - 1))}
-                    disabled={Number(prediction) <= 0}
+                    key={bt.key}
+                    className={`py-2 px-1 rounded-md text-xs font-semibold transition-all ${
+                      betType === bt.key
+                        ? 'bg-primary/20 text-primary border border-primary/30 shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
+                    }`}
+                    onClick={() => setBetType(bt.key)}
                   >
-                    <Minus className="h-4 w-4" />
+                    {bt.label}
                   </button>
-                  <div className="flex-1 relative">
-                    <Hash className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <input
-                      className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
-                      type="number"
-                      value={prediction}
-                      onChange={(e) => setPrediction(Math.max(0, Math.min(150, Number(e.target.value) || 0)))}
-                      min={0}
-                      max={150}
-                    />
-                  </div>
-                  <button
-                    className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30"
-                    onClick={() => setPrediction(Math.min(150, Number(prediction) + 1))}
-                    disabled={Number(prediction) >= 150}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                </div>
+                ))}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {BET_TYPES.find(b => b.key === betType)?.desc}
+                {betType === "EXACT" && <span className="ml-1 text-amber-400 font-bold">(🔥 2x WEIGHT BONUS)</span>}
               </div>
 
-              {/* Tolerance preview bar */}
-              <div>
-                <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono mb-1">
-                  <span>Winning range if count = {prediction}</span>
-                  <span className="text-primary">[{predRange.min}–{predRange.max}]</span>
+              {/* === Input per bet type === */}
+              {(betType === "UNDER" || betType === "OVER" || betType === "EXACT") && (
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">
+                    {betType === "UNDER" ? "Cars will be UNDER" : betType === "OVER" ? "Cars will be OVER" : "Exact car count"}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30" onClick={() => setPrediction(Math.max(1, Number(prediction) - 1))} disabled={Number(prediction) <= 1}><Minus className="h-4 w-4" /></button>
+                    <div className="flex-1 relative">
+                      <Hash className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <input className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors" type="number" value={prediction} onChange={(e) => setPrediction(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} min={0} max={200} />
+                    </div>
+                    <button className="h-10 w-10 rounded-lg bg-secondary border border-border flex items-center justify-center hover:bg-secondary/80 hover:border-primary/30 transition-colors text-foreground disabled:opacity-30" onClick={() => setPrediction(Math.min(200, Number(prediction) + 1))} disabled={Number(prediction) >= 200}><Plus className="h-4 w-4" /></button>
+                  </div>
                 </div>
-                <div className="relative h-2 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="absolute h-full rounded-full bg-gradient-to-r from-emerald-500/50 via-primary to-emerald-500/50 transition-all duration-300"
-                    style={{
-                      left: `${(predRange.min / 150) * 100}%`,
-                      width: `${((predRange.max - predRange.min) / 150) * 100}%`,
-                    }}
-                  />
-                  {/* Your prediction marker */}
-                  <div
-                    className="absolute h-3.5 w-1 bg-primary rounded-full -top-[3px] transition-all duration-300 shadow-sm shadow-amber-500/40"
-                    style={{ left: `${(Number(prediction) / 150) * 100}%` }}
-                  />
+              )}
+
+              {betType === "RANGE" && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">Min cars</label>
+                    <input className="w-full rounded-lg bg-secondary/80 border border-border px-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 transition-colors" type="number" value={rangeMin} onChange={(e) => setRangeMin(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-2">Max cars</label>
+                    <input className="w-full rounded-lg bg-secondary/80 border border-border px-3 py-2.5 font-mono text-lg font-bold text-center text-foreground outline-none focus:border-primary/50 transition-colors" type="number" value={rangeMax} onChange={(e) => setRangeMax(Math.max(0, Math.min(200, Number(e.target.value) || 0)))} />
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Range width: {rangeMax - rangeMin} (max 15)</div>
                 </div>
-                <div className="flex justify-between text-[9px] text-muted-foreground/50 font-mono mt-0.5">
-                  <span>0</span>
-                  <span>75</span>
-                  <span>150</span>
-                </div>
-              </div>
+              )}
 
               {/* Quick picks */}
               <div className="flex gap-2">
                 {[5, 10, 15, 20, 30, 50].map((n) => (
-                  <button
-                    key={n}
-                    className={`flex-1 py-1.5 rounded-md text-xs font-mono font-medium transition-all ${
-                      Number(prediction) === n
-                        ? 'bg-primary/20 text-primary border border-primary/30'
-                        : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border hover:text-foreground'
-                    }`}
-                    onClick={() => setPrediction(n)}
-                  >
-                    {n}
-                  </button>
+                  <button key={n} className={`flex-1 py-1.5 rounded-md text-xs font-mono font-medium transition-all ${Number(betType === 'RANGE' ? rangeMin : prediction) === n ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border hover:text-foreground'}`} onClick={() => betType === 'RANGE' ? (setRangeMin(n), setRangeMax(Math.min(200, n + 10))) : setPrediction(n)}>{n}</button>
                 ))}
               </div>
 
               {/* Stake input */}
               <div>
-                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">
-                  Stake (USDC)
-                </label>
+                <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1.5">Stake ($AMBER)</label>
                 <div className="relative">
-                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <input
-                    className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-sm text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    value={stake}
-                    onChange={(e) => setStake(e.target.value)}
-                    placeholder="1.00"
-                  />
+                  <Coins className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-amber-400" />
+                  <input className="w-full rounded-lg bg-secondary/80 border border-border pl-9 pr-3 py-2.5 font-mono text-sm text-foreground outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-colors" type="number" step="1" min="1" value={stake} onChange={(e) => setStake(e.target.value)} placeholder="10" />
                 </div>
-                {/* Quick stake buttons */}
                 <div className="flex gap-2 mt-2">
-                  {["1", "5", "10", "25", "50"].map((s) => (
-                    <button
-                      key={s}
-                      className={`flex-1 py-1 rounded-md text-xs font-mono font-medium transition-all ${
-                        stake === s
-                          ? 'bg-primary/20 text-primary border border-primary/30'
-                          : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border'
-                      }`}
-                      onClick={() => setStake(s)}
-                    >
-                      ${s}
-                    </button>
+                  {["10", "50", "100", "500", "1000"].map((s) => (
+                    <button key={s} className={`flex-1 py-1 rounded-md text-xs font-mono font-medium transition-all ${stake === s ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-secondary/60 text-muted-foreground border border-transparent hover:border-border'}`} onClick={() => setStake(s)}>{s}</button>
                   ))}
                 </div>
               </div>
@@ -630,26 +894,12 @@ export function Market() {
               {/* Pool stats */}
               {(poolTotal != null || stakeNum > 0) && (
                 <div className="glass rounded-lg p-3 space-y-2">
-                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                    Pool & Leverage
-                  </div>
+                  <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Pool Info</div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Total Pool</span>
-                      <span className="font-mono text-foreground">{poolTotal != null ? `$${poolTotal.toFixed(2)}` : '—'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Your Stake</span>
-                      <span className="font-mono text-primary">${stakeNum.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Leverage</span>
-                      <span className="font-mono text-emerald-400">{leverage ? `${leverage}x` : '—'}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Max Payout</span>
-                      <span className="font-mono text-emerald-400">{potentialPayout ? `$${potentialPayout}` : '—'}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Total Pool</span><span className="font-mono text-foreground">{poolTotal != null ? `${poolTotal.toFixed(2)} Ⓐ` : '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Your Stake</span><span className="font-mono text-primary">{stakeNum} Ⓐ</span></div>
+                      <div className="flex justify-between col-span-2"><span className="text-muted-foreground">Est. Payout</span><span className="font-mono text-emerald-400">{estimatedPayout > 0 ? `~${estimatedPayout.toFixed(2)} Ⓐ (${estimatedMultiple.toFixed(2)}x)` : "—"}</span></div>
+                      <div className="flex justify-between col-span-2 items-center"><span className="text-muted-foreground">Risk Level</span><span className="font-mono text-amber-300">{renderRiskBar(riskProfile.fill)} {riskProfile.label}</span></div>
                   </div>
                 </div>
               )}
@@ -658,45 +908,24 @@ export function Market() {
               <button
                 className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.01] active:scale-[0.99]"
                 onClick={placeBet}
-                disabled={phase !== "RED_OPEN" || txLoading || Number(prediction) <= 0 || stakeNum <= 0}
+                disabled={!bettingOpen || txLoading || stakeNum <= 0}
               >
                 {txLoading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Confirming…
-                  </span>
-                ) : phase !== "RED_OPEN" ? (
-                  "Betting Closed"
-                ) : (
-                  <>Predict {prediction} cars — ${stake} USDC</>
+                  <span className="flex items-center justify-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Confirming…</span>
+                ) : !bettingOpen ? ("Betting Closed") : (
+                  <>{betType === "RANGE" ? `Range [${rangeMin}–${rangeMax}]` : `${betType} ${prediction}`} — {stake} $AMBER</>
                 )}
               </button>
 
               {/* Claim Button */}
-              <button
-                className="w-full py-2.5 rounded-xl font-medium text-sm transition-all duration-200 border border-border bg-secondary/40 text-foreground hover:bg-secondary/60 hover:border-primary/30 disabled:opacity-30 disabled:cursor-not-allowed"
-                onClick={claim}
-                disabled={(phase !== "SETTLING" && phase !== "RED_OPEN") || txLoading}
-              >
-                <span className="flex items-center justify-center gap-2">
-                  <Coins className="h-4 w-4" />
-                  Claim Winnings
-                </span>
+              <button className="w-full py-2.5 rounded-xl font-medium text-sm transition-all duration-200 border border-border bg-secondary/40 text-foreground hover:bg-secondary/60 hover:border-primary/30 disabled:opacity-30 disabled:cursor-not-allowed" onClick={claim} disabled={txLoading}>
+                <span className="flex items-center justify-center gap-2"><Coins className="h-4 w-4" /> Claim Winnings</span>
               </button>
 
               {/* Tx Status */}
               {txStatus && (
-                <div className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2.5 ${
-                  txStatus.includes("✓")
-                    ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
-                    : txStatus.includes("Tx:")
-                      ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
-                      : 'text-red-400 bg-red-500/10 border border-red-500/20'
-                }`}>
-                  {txStatus.includes("✓")
-                    ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                    : <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                  }
+                <div className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2.5 ${txStatus.includes("✓") ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20' : txStatus.includes("Tx:") ? 'text-amber-400 bg-amber-500/10 border border-amber-500/20' : 'text-red-400 bg-red-500/10 border border-red-500/20'}`}>
+                  {txStatus.includes("✓") ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />}
                   <span className="break-all">{txStatus}</span>
                 </div>
               )}
@@ -705,7 +934,7 @@ export function Market() {
 
           {/* ── Live Data ── */}
           <div className="grid grid-cols-2 gap-3">
-            <DataTile icon={Car} label="Live Count" value={currentCount} accent sub={phase === "GREEN_COUNTING" ? "counting…" : ""} />
+            <DataTile icon={Car} label="Live Count" value={currentCount} accent sub={phase === "EVENT_RESOLUTION" ? "counting…" : ""} />
             <DataTile icon={Eye} label="Frames" value={frameCount} sub="processed" />
           </div>
 
@@ -746,17 +975,106 @@ export function Market() {
             )}
           </div>
 
+        {/* ── NFT Purchase Panel (God Mode) ── */}
+        {!junctionOwner && (
+          <div className="glass rounded-xl p-5 mb-4 relative overflow-hidden group">
+            {/* Background Glow */}
+            <div className="absolute -top-20 -right-20 w-40 h-40 bg-primary/10 rounded-full blur-3xl group-hover:bg-primary/20 transition-all duration-700" />
+            
+            <div className="flex items-center gap-2 mb-2 relative z-10">
+              <Landmark className="h-5 w-5 text-amber-400" />
+              <span className="text-sm font-bold bg-clip-text text-transparent bg-gradient-to-r from-amber-400 to-amber-200">
+                Buy Real Estate NFT
+              </span>
+            </div>
+            
+            <p className="text-xs text-muted-foreground mb-4 relative z-10">
+              Own this junction on the blockchain! As the landlord, you will instantly earn a <strong className="text-primary">0.5% protocol royalty</strong> on the entire betting volume every time a market settles here forever.
+            </p>
+
+            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between border-t border-border/30 pt-4 relative z-10">
+              <div className="flex gap-4 w-full sm:w-auto">
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase">Base Price</div>
+                  <div className="line-through text-muted-foreground font-mono text-xs">100 $AMBER</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-emerald-400 uppercase">Your Price</div>
+                  <div className="font-mono font-bold text-emerald-400 text-xl">{Number(nftPrice).toFixed(0)} $AMBER</div>
+                </div>
+              </div>
+
+              <div className="flex flex-col w-full sm:w-auto text-right">
+                <button
+                  className="px-6 py-2 rounded-xl bg-gradient-to-r from-emerald-500/20 to-primary/20 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 text-sm font-bold shadow-lg shadow-emerald-500/10 transition-all disabled:opacity-50"
+                  onClick={buyNft}
+                  disabled={nftTxLoading}
+                >
+                  {nftTxLoading ? "Purchasing..." : "Mint Real Estate"}
+                </button>
+                {myPoints > 0 && (
+                  <span className="text-[10px] text-emerald-400 mt-1">
+                    -{5 * myPoints}% skill discount applied ({myPoints} prediction wins)
+                  </span>
+                )}
+                {nftTxStatus && (
+                  <span className="text-[10px] text-amber-400 mt-1">{nftTxStatus}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Live Social Bets ── */}
+        <div className="glass rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Radio className="h-4 w-4 text-primary animate-pulse" />
+              <span className="text-sm font-semibold">Live Action</span>
+            </div>
+            {bettingOpen && <span className="text-[10px] text-emerald-400 bg-emerald-400/10 px-2 rounded-full uppercase">Accepting Bets</span>}
+          </div>
+          
+          <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+            {liveBets.length === 0 ? (
+              <div className="text-xs text-muted-foreground text-center py-4">No bets placed this round yet. Be the first!</div>
+            ) : (
+              liveBets.map((b, i) => (
+                <div key={`${b.bettor}-${i}`} className="flex justify-between items-center bg-secondary/30 p-2 rounded-lg border border-border/30 animate-fade-in text-xs">
+                  <span className="font-mono font-bold text-amber-400">
+                    {b.ensName || `${b.bettor.slice(0, 6)}...${b.bettor.slice(-4)}`}
+                  </span>
+                  <div className="text-muted-foreground flex items-center gap-1">
+                    <span className="px-1 py-0.5 rounded bg-primary/15 text-primary text-[10px] font-bold">{b.betType || 'BET'}</span>
+                    <strong className="text-primary font-mono">{Number(formatUnits(b.stakeAmount || '0', 18)).toFixed(0)} Ⓐ</strong>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
           {/* ── Round History ── */}
           {roundHistory.length > 0 && (
             <div className="glass rounded-xl p-4">
               <div className="flex items-center gap-2 mb-3">
                 <History className="h-4 w-4 text-primary" />
-                <span className="text-sm font-semibold">Round History</span>
+                <span className="text-sm font-semibold">Past Settlements</span>
                 <span className="ml-auto text-[10px] text-muted-foreground font-mono">{roundHistory.length} rounds</span>
               </div>
-              <div className="space-y-0">
+              <div className="space-y-0 text-xs">
                 {roundHistory.map((r, i) => (
-                  <RoundHistoryRow key={`${r.finalCount}-${r.atMs || i}`} round={r} />
+                  <div key={`${r.finalCount}-${r.atMs || i}`} className="flex items-center justify-between gap-3 py-2 border-b border-border/30 last:border-0">
+                    <div className="flex items-center gap-2">
+                      <div className="h-5 w-5 rounded-md bg-primary/10 flex items-center justify-center">
+                        <Car className="h-2.5 w-2.5 text-primary" />
+                      </div>
+                      <span className="font-mono font-medium text-foreground">{r.finalCount} cars</span>
+                    </div>
+                    <div className="font-mono text-muted-foreground">
+                      [{r.toleranceLow}–{r.toleranceHigh}]
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -771,7 +1089,7 @@ export function Market() {
               <div className="flex items-center gap-2">
                 <Camera className="h-4 w-4 text-primary" />
                 <span className="text-sm font-semibold">CCTV Feed</span>
-                {phase === "GREEN_COUNTING" && (
+                {phase === "EVENT_RESOLUTION" && (
                   <div className="flex items-center gap-1 ml-2 px-2 py-0.5 bg-red-500/15 border border-red-500/25 rounded-full">
                     <div className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
                     <span className="text-[10px] text-red-400 font-semibold uppercase">Recording</span>
@@ -837,7 +1155,7 @@ export function Market() {
               )}
 
               {/* Live count overlay */}
-              {phase === "GREEN_COUNTING" && !annotatedFrame && (
+              {phase === "EVENT_RESOLUTION" && !annotatedFrame && (
                 <div className="absolute top-4 right-4 glass rounded-xl px-4 py-3 flex items-center gap-3">
                   <Car className="h-5 w-5 text-primary" />
                   <div>

@@ -1,6 +1,11 @@
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Link, useLocation } from "react-router-dom";
 import { Activity, Home, BarChart3 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { useAccount, useReadContract } from "wagmi";
+import { formatUnits } from "viem";
+import { config } from "@/lib/config";
+import { erc20Abi } from "@/lib/amberMarketAbi";
 
 const navLinks = [
   { to: "/", label: "Home", icon: Home },
@@ -8,6 +13,35 @@ const navLinks = [
 
 export function TerminalShell({ title, children, right }) {
   const location = useLocation();
+  const { address, isConnected } = useAccount();
+  const [myEns, setMyEns] = useState(null);
+  
+  useEffect(() => {
+    if (!isConnected || !address) {
+      setMyEns(null);
+      return;
+    }
+    fetch(`${config.serverUrl}/api/ens/lookup/${address}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.name) setMyEns(d.name);
+      })
+      .catch(console.error);
+  }, [isConnected, address]);
+
+  // Fetch AMBER balance
+  const { data: amberBalance } = useReadContract({
+    address: config.amberTokenAddress,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [address],
+    query: {
+      enabled: isConnected && !!address && !!config.amberTokenAddress,
+      refetchInterval: 10000,
+    }
+  });
+
+  const formattedBalance = amberBalance != null ? Number(formatUnits(amberBalance, 18)).toFixed(0) : "0";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -69,14 +103,61 @@ export function TerminalShell({ title, children, right }) {
             {/* Right: Status + Wallet */}
             <div className="flex items-center gap-3">
               {right}
-              <ConnectButton
-                showBalance={false}
-                chainStatus="icon"
-                accountStatus={{
-                  smallScreen: "avatar",
-                  largeScreen: "full",
+              <ConnectButton.Custom>
+                {({ account, chain, openAccountModal, openChainModal, openConnectModal, authenticationStatus, mounted }) => {
+                  const ready = mounted && authenticationStatus !== 'loading';
+                  const connected = ready && account && chain && (!authenticationStatus || authenticationStatus === 'authenticated');
+
+                  if (!ready) {
+                    return (
+                      <div aria-hidden="true" style={{ opacity: 0, pointerEvents: 'none', userSelect: 'none' }}>
+                        <button disabled>Loading...</button>
+                      </div>
+                    );
+                  }
+
+                  if (!connected) {
+                    return (
+                      <button onClick={openConnectModal} type="button" className="bg-primary/20 text-primary border border-primary/30 px-3 py-1.5 rounded-lg text-sm font-bold shadow shadow-primary/10 hover:bg-primary/30 transition-all font-mono">
+                        Connect Wallet
+                      </button>
+                    );
+                  }
+
+                  if (chain.unsupported) {
+                    return (
+                      <button onClick={openChainModal} type="button" className="bg-red-500/20 text-red-500 border border-red-500/30 px-3 py-1.5 rounded-lg text-sm font-bold shadow shadow-red-500/10 hover:bg-red-500/30 transition-all font-mono">
+                        Wrong Network
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={openChainModal}
+                        type="button"
+                        className="hidden sm:flex items-center text-xs font-mono font-bold bg-secondary/80 border border-border px-3 py-1.5 rounded-lg text-foreground hover:bg-secondary transition-colors"
+                      >
+                        {chain.hasIcon && (
+                          <div style={{ background: chain.iconBackground }} className="w-4 h-4 rounded-full overflow-hidden mr-2">
+                            {chain.iconUrl && (<img alt={chain.name ?? 'Chain icon'} src={chain.iconUrl} className="w-4 h-4" />)}
+                          </div>
+                        )}
+                        {chain.name}
+                      </button>
+
+                      <div className="flex items-center text-xs font-mono font-bold bg-amber-500/10 border border-amber-500/30 text-amber-500 px-3 py-1.5 rounded-lg">
+                        {formattedBalance} Ⓐ
+                      </div>
+
+                      <button onClick={openAccountModal} type="button" className="flex items-center text-xs font-mono font-bold bg-primary/20 text-primary border border-primary/30 px-3 py-1.5 rounded-lg shadow shadow-primary/10 hover:bg-primary/30 transition-all">
+                        {myEns || account.displayName}
+                      </button>
+                    </div>
+                  );
                 }}
-              />
+              </ConnectButton.Custom>
             </div>
           </div>
         </div>

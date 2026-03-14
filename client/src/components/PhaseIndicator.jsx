@@ -1,9 +1,10 @@
-import { Timer, Eye, Landmark, Pause } from "lucide-react";
+import { Timer, Eye, Landmark, Pause, Lock } from "lucide-react";
 
 const phases = [
-  { key: "RED_OPEN", label: "Betting Open", icon: Timer, colorClass: "phase-red", bgClass: "bg-phase-red" },
-  { key: "GREEN_COUNTING", label: "Counting", icon: Eye, colorClass: "phase-green", bgClass: "bg-phase-green" },
-  { key: "SETTLING", label: "Settling", icon: Landmark, colorClass: "phase-amber", bgClass: "bg-phase-amber" },
+  { key: "PREDICTION_OPEN", label: "Betting Open", icon: Timer, colorClass: "phase-green", bgClass: "bg-phase-green" },
+  { key: "PREDICTION_LOCKED", label: "Locked", icon: Lock, colorClass: "phase-red", bgClass: "bg-phase-red" },
+  { key: "EVENT_RESOLUTION", label: "Counting", icon: Eye, colorClass: "phase-amber", bgClass: "bg-phase-amber" },
+  { key: "REWARD_DISTRIBUTION", label: "Settling", icon: Landmark, colorClass: "phase-amber", bgClass: "bg-phase-amber" },
 ];
 
 export function PhaseIndicator({ currentPhase }) {

@@ -1,6 +1,22 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import { config } from "@/lib/config";
+
+let sharedSocket = null;
+
+function getSocket() {
+  if (!sharedSocket) {
+    sharedSocket = io(config.serverUrl, {
+      transports: ["polling", "websocket"],
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+    });
+  }
+  return sharedSocket;
+}
 
 /**
  * Central socket hook — keeps real-time state in sync.
@@ -18,18 +34,7 @@ import { config } from "@/lib/config";
  *   • Exposes `newSettlement` + `dismissSettlement` for the popup
  */
 export function useSocket() {
-  const socket = useMemo(
-    () =>
-      io(config.serverUrl, {
-        transports: ["websocket"],
-        autoConnect: true,
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-      }),
-    []
-  );
+  const socket = useMemo(() => getSocket(), []);
 
   const [connected, setConnected] = useState(socket.connected);
   const [hello, setHello] = useState(null);
@@ -69,19 +74,15 @@ export function useSocket() {
       setConnected(false);
     }
 
-    socket.on("connect", onConnect);
-    socket.on("disconnect", onDisconnect);
-
-    /* ── Initial handshake ── */
-    socket.on("server:hello", (payload) => {
+    function onServerHello(payload) {
       setHello(payload);
       if (payload?.market) {
         setMarketState(payload.market);
       }
-    });
+    }
 
     /* ── Phase transition — full snapshot from server ── */
-    socket.on("junction:state_change", (payload) => {
+    function onStateChange(payload) {
       setMarketState((prev) => ({
         ...(prev || {}),
         engineState: payload.engineState,
@@ -93,31 +94,55 @@ export function useSocket() {
       }));
 
       // New round → clear counting & annotated frame
-      if (payload.engineState === "RED_OPEN") {
+      if (payload.engineState === "PREDICTION_OPEN") {
         setCounting(null);
         setAnnotatedFrame(null);
       }
-    });
+    }
 
-    /* ── Live counting ticks ── */
-    socket.on("oracle:counting", (payload) => setCounting(payload));
+    function onCounting(payload) {
+      setCounting(payload);
+    }
 
-    /* ── Annotated CV frames with bounding boxes ── */
-    socket.on("oracle:annotated_frame", (payload) => setAnnotatedFrame(payload));
+    function onAnnotatedFrame(payload) {
+      setAnnotatedFrame(payload);
+    }
 
-    /* ── Settlement ── */
-    socket.on("market:settled", (payload) => {
+    function onSettled(payload) {
       setSettled(payload);
       setNewSettlement(payload);
-    });
+    }
+
+    function onBetPlaced(payload) {
+      setLastBet(payload);
+    }
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("server:hello", onServerHello);
+    socket.on("junction:state_change", onStateChange);
+
+    /* ── Live counting ticks ── */
+    socket.on("oracle:counting", onCounting);
+
+    /* ── Annotated CV frames with bounding boxes ── */
+    socket.on("oracle:annotated_frame", onAnnotatedFrame);
+
+    /* ── Settlement ── */
+    socket.on("market:settled", onSettled);
 
     /* ── Bet confirmations ── */
-    socket.on("market:bet_placed", (payload) => setLastBet(payload));
+    socket.on("market:bet_placed", onBetPlaced);
 
     return () => {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
-      socket.disconnect();
+      socket.off("server:hello", onServerHello);
+      socket.off("junction:state_change", onStateChange);
+      socket.off("oracle:counting", onCounting);
+      socket.off("oracle:annotated_frame", onAnnotatedFrame);
+      socket.off("market:settled", onSettled);
+      socket.off("market:bet_placed", onBetPlaced);
     };
   }, [socket, refetchSnapshot]);
 

@@ -102,7 +102,20 @@ export function SettlementModal({ settlement, userPrediction, onDismiss }) {
 
   if (!settlement) return null;
 
-  const { finalCount, toleranceLow, toleranceHigh } = settlement;
+  const parsedFinalCount = Number(settlement?.finalCount);
+  const finalCount = Number.isFinite(parsedFinalCount) ? parsedFinalCount : 0;
+
+  const parsedToleranceLow = Number(settlement?.toleranceLow);
+  const parsedToleranceHigh = Number(settlement?.toleranceHigh);
+
+  // Some settlement events only provide finalCount. Fall back to ±1.
+  const toleranceLow = Number.isFinite(parsedToleranceLow)
+    ? parsedToleranceLow
+    : Math.max(0, finalCount - 1);
+  const toleranceHigh = Number.isFinite(parsedToleranceHigh)
+    ? parsedToleranceHigh
+    : finalCount + 1;
+
   const predicted = Number(userPrediction) || 0;
   const isWinner = predicted >= toleranceLow && predicted <= toleranceHigh && predicted > 0;
 

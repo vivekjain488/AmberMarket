@@ -8,8 +8,13 @@ import {
 
 import { TerminalShell } from "@/components/TerminalShell";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ENSClaimModal } from "@/components/ENSClaimModal";
+import { Leaderboard } from "@/components/Leaderboard";
 import { useSocket } from "@/hooks/useSocket";
 import { config } from "@/lib/config";
+import { amberJunctionNftAbi, amberMarketAbi } from "@/lib/amberMarketAbi";
+import { formatUnits, keccak256, toBytes } from "viem";
+import { useAccount, usePublicClient } from "wagmi";
 
 /* ═══════════════════════════════════════════════
    G O O G L E   M A P S   D A R K   S T Y L E
@@ -48,11 +53,50 @@ function StatCard({ icon: Icon, label, value, accent = false }) {
   );
 }
 
+function toJunctionBytes32(junctionId) {
+  if (!junctionId) return null;
+  if (/^0x[0-9a-fA-F]{64}$/.test(junctionId)) return junctionId;
+  return keccak256(toBytes(junctionId));
+}
+
 /* ═══════════════════════════════════════════════
    J U N C T I O N   C A R D
    ═══════════════════════════════════════════════ */
 
-function JunctionCard({ junction, isActive, livePhase, timeLeftSec }) {
+function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient, activePoolAmber }) {
+  const [ownerEns, setOwnerEns] = useState(null);
+  
+  // Resolve owner from NFT, then to ENS
+  useEffect(() => {
+    async function fetchOwner() {
+      if (!config.junctionNftAddress || !publicClient) return;
+      try {
+        const junctionKey = toJunctionBytes32(junction.id);
+        if (!junctionKey) {
+          setOwnerEns("Unowned");
+          return;
+        }
+
+        const ownerAddr = await publicClient.readContract({
+          address: config.junctionNftAddress,
+          abi: amberJunctionNftAbi,
+          functionName: "getOwnerOfJunction",
+          args: [junctionKey]
+        });
+        if (ownerAddr && ownerAddr !== "0x0000000000000000000000000000000000000000") {
+          const res = await fetch(`${config.serverUrl}/api/ens/lookup/${ownerAddr}`);
+          const data = await res.json();
+          setOwnerEns(data.name || `${ownerAddr.slice(0, 6)}...${ownerAddr.slice(-4)}`);
+        } else {
+          setOwnerEns("Unowned");
+        }
+      } catch (err) {
+        setOwnerEns("Unowned");
+      }
+    }
+    fetchOwner();
+  }, [junction.id, publicClient]);
+
   return (
     <Link
       to={`/market/${junction.id}`}
@@ -102,7 +146,7 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec }) {
           <div className="absolute bottom-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm border border-border/30">
             <Clock className="h-3 w-3 text-primary" />
             <span className="text-[10px] font-mono font-bold text-primary">
-              {livePhase === "RED_OPEN" ? "Betting" : livePhase === "GREEN_COUNTING" ? "Counting" : "Settling"}
+              {livePhase === "PREDICTION_OPEN" ? "Betting" : livePhase === "EVENT_RESOLUTION" ? "Counting" : livePhase === "PREDICTION_LOCKED" ? "Locked" : "Settling"}
             </span>
             {timeLeftSec != null && (
               <span className="text-[10px] font-mono text-foreground">{timeLeftSec}s</span>
@@ -122,10 +166,16 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec }) {
 
         <div className="mt-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Signal className="h-3 w-3" />
-              <span className="font-mono">{junction.road_count} roads</span>
+            <div className="flex items-center gap-1 text-xs text-muted-foreground bg-secondary/80 px-2 py-1 rounded">
+              <span className="font-mono text-[10px] text-amber-400">Owner:</span> 
+              <span className="font-mono font-medium truncate max-w-[100px]">{ownerEns || "Loading..."}</span>
             </div>
+            {isActive && activePoolAmber != null && (
+              <div className="flex items-center gap-1 text-xs text-primary bg-primary/10 border border-primary/20 px-2 py-1 rounded">
+                <span className="font-mono text-[10px]">Pool:</span>
+                <span className="font-mono font-semibold">{activePoolAmber.toFixed(2)} Ⓐ</span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-1 text-xs font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300">
             Trade <ChevronRight className="h-3 w-3" />
@@ -141,9 +191,38 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec }) {
    ═══════════════════════════════════════════════ */
 
 export function Home() {
+  const { isConnected, address } = useAccount();
+  const publicClient = usePublicClient();
   const [junctions, setJunctions] = useState([]);
   const [activeJunctionId, setActiveJunctionId] = useState(null);
+  const [activePoolAmber, setActivePoolAmber] = useState(null);
+  const [showEnsModal, setShowEnsModal] = useState(false);
+  const [myEns, setMyEns] = useState(null);
+  const [faucetLoading, setFaucetLoading] = useState(false);
   const refreshRef = useRef(null);
+
+  const claimFaucet = async () => {
+    if (!address) return;
+    setFaucetLoading(true);
+    try {
+      const res = await fetch(`${config.serverUrl}/api/amber/faucet`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const txText = data.txHash ? ` Tx: ${data.txHash.slice(0, 10)}…` : "";
+        alert(`Success! Claimed 1000 $AMBER from faucet.${txText}`);
+      } else {
+        alert("Faucet error: " + data.error);
+      }
+    } catch (err) {
+      alert("Failed to hit faucet: " + err.message);
+    } finally {
+      setFaucetLoading(false);
+    }
+  };
 
   // Socket for real-time updates
   const { connected, marketState, counting } = useSocket();
@@ -175,6 +254,20 @@ export function Home() {
     return () => clearInterval(refreshRef.current);
   }, [fetchJunctions]);
 
+  // Check if user has an ENS name yet
+  useEffect(() => {
+    if (!isConnected || !address) {
+      setMyEns(null);
+      return;
+    }
+    fetch(`${config.serverUrl}/api/ens/lookup/${address}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.name) setMyEns(d.name);
+      })
+      .catch(console.error);
+  }, [isConnected, address]);
+
   // When socket tells us the phase changed, re-fetch to stay in sync
   useEffect(() => {
     if (marketState?.engineState) {
@@ -182,15 +275,48 @@ export function Home() {
     }
   }, [marketState?.engineState, fetchJunctions]);
 
+  // Read active pool size (total staked) for active junction card
+  useEffect(() => {
+    if (!publicClient || !config.contractAddress) {
+      setActivePoolAmber(null);
+      return;
+    }
+
+    let cancelled = false;
+    async function fetchActivePool() {
+      try {
+        const market = await publicClient.readContract({
+          address: config.contractAddress,
+          abi: amberMarketAbi,
+          functionName: "getCurrentMarket",
+        });
+
+        if (!cancelled) {
+          setActivePoolAmber(Number(formatUnits(market.totalStaked ?? 0n, 18)));
+        }
+      } catch {
+        if (!cancelled) setActivePoolAmber(null);
+      }
+    }
+
+    fetchActivePool();
+    const interval = setInterval(fetchActivePool, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [publicClient, marketState?.engineState]);
+
   // Derive live phase info from socket for the active junction card
   const livePhase = marketState?.engineState || null;
   const liveTimeLeftSec = useMemo(() => {
     if (!marketState?.stateSinceMs || !marketState?.countdown) return null;
     const { engineState, stateSinceMs, countdown } = marketState;
     let durationMs = 0;
-    if (engineState === "RED_OPEN") durationMs = countdown.redMs;
-    else if (engineState === "GREEN_COUNTING") durationMs = countdown.greenMs;
-    else if (engineState === "SETTLING") durationMs = countdown.settleMs || 3000;
+    if (engineState === "PREDICTION_OPEN") durationMs = countdown.predictionOpenMs;
+    else if (engineState === "PREDICTION_LOCKED") durationMs = countdown.predictionLockMs;
+    else if (engineState === "EVENT_RESOLUTION") durationMs = countdown.resolutionMs;
+    else if (engineState === "REWARD_DISTRIBUTION") durationMs = countdown.rewardMs;
     else return null;
     const left = Math.max(0, durationMs - (Date.now() - stateSinceMs));
     return Math.ceil(left / 1000);
@@ -222,6 +348,13 @@ export function Home() {
         />
       }
     >
+      {showEnsModal && (
+        <ENSClaimModal 
+          onClose={() => setShowEnsModal(false)} 
+          onSuccess={(name) => setMyEns(name)} 
+        />
+      )}
+
       {/* ── Hero Section ── */}
       <section className="relative mb-8 animate-fade-in">
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
@@ -232,14 +365,38 @@ export function Home() {
             </h1>
             <p className="mt-2 text-muted-foreground max-w-xl text-sm sm:text-base leading-relaxed">
               Predict the number of cars crossing a junction during a green-light window.
-              Stake USDC, watch the live CCTV feed, and win from the pool.
+              Stake $AMBER, watch the live CCTV feed, and win from the pool.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="px-4 py-2 rounded-xl glass text-xs font-medium text-primary flex items-center gap-2">
-              <Zap className="h-3.5 w-3.5" />
-              Powered by Base Sepolia
+          <div className="flex flex-col gap-2 relative z-10">
+            <div className="flex items-center gap-2">
+              <div className="px-4 py-2 rounded-xl glass text-xs font-medium text-primary flex items-center gap-2">
+                <Zap className="h-3.5 w-3.5" />
+                Powered by Base Sepolia
+              </div>
             </div>
+            {isConnected && !myEns && (
+              <button
+                onClick={() => setShowEnsModal(true)}
+                className="px-4 py-2 mt-2 sm:mt-0 rounded-xl bg-gradient-to-r from-emerald-500/20 to-blue-500/20 border border-emerald-500/30 text-emerald-400 text-xs font-bold uppercase tracking-wider hover:bg-emerald-500/30 transition-all font-mono shadow-lg shadow-emerald-500/10 flex items-center justify-center gap-2 w-full sm:w-auto"
+              >
+                Mint your .eth Identity 🎁
+              </button>
+            )}
+            {isConnected && myEns && (
+              <div className="px-4 py-2 mt-2 sm:mt-0 rounded-xl bg-primary/10 border border-primary/20 text-primary text-xs font-bold font-mono text-center w-full sm:w-auto">
+                God Mode Active: {myEns}
+              </div>
+            )}
+            {isConnected && (
+              <button
+                onClick={claimFaucet}
+                disabled={faucetLoading}
+                className="px-4 py-2 mt-2 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-500 text-xs font-bold uppercase tracking-wider hover:bg-amber-500/30 transition-all font-mono flex items-center justify-center gap-2 w-full sm:w-auto disabled:opacity-50"
+              >
+                {faucetLoading ? "Mining..." : "Claim 1000 $AMBER Faucet"}
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -334,6 +491,8 @@ export function Home() {
                 isActive={j.id === activeJunctionId}
                 livePhase={j.id === activeJunctionId ? livePhase : null}
                 timeLeftSec={j.id === activeJunctionId ? liveTimeLeftSec : null}
+                publicClient={publicClient}
+                activePoolAmber={j.id === activeJunctionId ? activePoolAmber : null}
               />
             ))}
 
@@ -347,6 +506,9 @@ export function Home() {
           </div>
         </div>
       </section>
+
+      {/* ── Leaderboard ── */}
+      <Leaderboard />
     </TerminalShell>
   );
 }

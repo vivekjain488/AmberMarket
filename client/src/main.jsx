@@ -8,18 +8,26 @@ import { RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import { WagmiProvider, createConfig, http } from "wagmi";
 import { injected } from "wagmi/connectors";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { baseSepolia } from "wagmi/chains";
+import { baseSepolia, hardhat, sepolia } from "wagmi/chains";
 
 import "./index.css";
 import App from "./App.jsx";
 
 const queryClient = new QueryClient();
+const preferredChainId = Number(import.meta.env.VITE_CHAIN_ID || sepolia.id);
+const supportedChains = [hardhat, sepolia, baseSepolia];
+const chains = [
+  ...supportedChains.filter((chain) => chain.id === preferredChainId),
+  ...supportedChains.filter((chain) => chain.id !== preferredChainId),
+];
 
 const wagmiConfig = createConfig({
-  chains: [baseSepolia],
+  chains,
   connectors: [injected()],
   transports: {
-    [baseSepolia.id]: http(),
+    [hardhat.id]: http(import.meta.env.VITE_LOCAL_RPC_URL || "http://127.0.0.1:8545"),
+    [sepolia.id]: http(import.meta.env.VITE_SEPOLIA_RPC_URL),
+    [baseSepolia.id]: http(import.meta.env.VITE_BASE_SEPOLIA_RPC_URL),
   },
 });
 
