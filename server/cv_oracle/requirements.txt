@@ -1,0 +1,12 @@
+# AmberMarket CV Oracle — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Computer Vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# YOLOv8 Object Detection
+ultralytics>=8.1.0
+
+# Optional: RT-DETR model (alternative to YOLO)
+# Already included in ultralytics package

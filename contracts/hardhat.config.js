@@ -1,7 +1,10 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
-const { BASE_SEPOLIA_RPC, ORACLE_PRIVATE_KEY } = process.env;
+const { BASE_SEPOLIA_RPC, ORACLE_PRIVATE_KEY, PRIVATE_KEY } = process.env;
+const deployKey = ORACLE_PRIVATE_KEY || PRIVATE_KEY || "";
+// Only pass accounts when the key looks like a valid hex private key (64 hex chars)
+const isValidKey = /^(0x)?[0-9a-fA-F]{64}$/.test(deployKey);
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
@@ -31,7 +34,7 @@ module.exports = {
     },
     baseSepolia: {
       url: BASE_SEPOLIA_RPC || "https://sepolia.base.org",
-      accounts: ORACLE_PRIVATE_KEY ? [`0x${ORACLE_PRIVATE_KEY.replace(/^0x/, "")}`] : [],
+      accounts: isValidKey ? [`0x${deployKey.replace(/^0x/, "")}`] : [],
       chainId: 84532,
     },
     // hardhat: {

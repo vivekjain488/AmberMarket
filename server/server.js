@@ -17,7 +17,7 @@ const { getCctvCameras, getCctvBySlug } = require("./cctvData");
 const PORT = Number(process.env.PORT || 3001);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
 
-const BASE_SEPOLIA_RPC = process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org";
+const BASE_SEPOLIA_RPC = process.env.BASE_SEPOLIA_RPC || "https://base-sepolia-rpc.publicnode.com";
 const ORACLE_PRIVATE_KEY = process.env.ORACLE_PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 
@@ -58,9 +58,14 @@ let signer = null;
 let amberMarket = null;
 
 function emitState() {
+  // Send the full snapshot so the client can reset its timer on every phase transition
   io.emit("junction:state_change", {
     junctionId: engine.activeJunctionId,
-    state: engine.state === EngineState.RED_OPEN ? "RED" : engine.state === EngineState.GREEN_COUNTING ? "GREEN" : engine.state,
+    engineState: engine.state,
+    stateSinceMs: engine.stateSinceMs,
+    countdown: engine.countdown,
+    marketId: engine.marketId,
+    lastSettlement: engine.lastSettlement,
     timestamp: Math.floor(Date.now() / 1000),
   });
 }
@@ -78,7 +83,12 @@ function getMarketSnapshot() {
 }
 
 async function setupChain() {
-  if (!CONTRACT_ADDRESS || !ORACLE_PRIVATE_KEY) return;
+  const isValidKey = /^(0x)?[0-9a-fA-F]{64}$/i.test(ORACLE_PRIVATE_KEY || "");
+  if (!CONTRACT_ADDRESS || !isValidKey) {
+    console.warn("\n[!] On-chain features disabled: Missing or invalid ORACLE_PRIVATE_KEY in .env");
+    console.warn("[!] The server will run in simulation mode. Please configure .env to interact with contracts.\n");
+    return;
+  }
   provider = new ethers.JsonRpcProvider(BASE_SEPOLIA_RPC);
   signer = new ethers.Wallet(ORACLE_PRIVATE_KEY, provider);
   amberMarket = new ethers.Contract(CONTRACT_ADDRESS, amberMarketAbi, signer);
@@ -150,7 +160,24 @@ function startPythonCounting(junctionId, streamUrl) {
         const msg = JSON.parse(line);
         if (typeof msg.count === "number") engine.python.lastCount = msg.count;
         if (typeof msg.frames_processed === "number") engine.python.frames = msg.frames_processed;
-        io.emit("oracle:counting", { junctionId, currentCount: engine.python.lastCount, frameNumber: engine.python.frames });
+
+        // Core counting event (lightweight — sent every second)
+        io.emit("oracle:counting", {
+          junctionId,
+          currentCount: engine.python.lastCount,
+          frameNumber: engine.python.frames,
+          detections: msg.detections || [],
+          signalColor: msg.signal_color || "unknown",
+        });
+
+        // Annotated frame event (heavier — sent every ~3 seconds by the CV script)
+        if (msg.annotated_frame) {
+          io.emit("oracle:annotated_frame", {
+            junctionId,
+            frame: msg.annotated_frame,
+            count: engine.python.lastCount,
+          });
+        }
       } catch {
         // ignore non-json
       }

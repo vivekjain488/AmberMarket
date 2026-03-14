@@ -24,12 +24,13 @@ describe("AmberMarket", function () {
       await usdc.connect(to).approve(await market.getAddress(), amount);
     };
 
-    return { owner, oracle, alice, bob, feeRecipient, usdc, market, mint };
+    const jId = ethers.id("bkc-signal-1");
+    return { owner, oracle, alice, bob, feeRecipient, usdc, market, mint, jId };
   }
 
   it("only oracle can open/lock/submit", async function () {
-    const { alice, oracle, market } = await deploy();
-    const junctionId = ethers.id("bkc-signal-1");
+    const { alice, oracle, market, jId } = await deploy();
+    const junctionId = jId;
 
     await expect(market.connect(alice).openMarket(junctionId)).to.be.revertedWithCustomError(market, "OnlyOracle");
 
@@ -40,8 +41,8 @@ describe("AmberMarket", function () {
   });
 
   it("bet validation and one bet per wallet per market", async function () {
-    const { oracle, alice, market, mint } = await deploy();
-    const junctionId = ethers.id("bkc-signal-1");
+    const { oracle, alice, market, mint, jId } = await deploy();
+    const junctionId = jId;
 
     await market.connect(oracle).openMarket(junctionId);
 
@@ -55,8 +56,8 @@ describe("AmberMarket", function () {
   });
 
   it("locks market and prevents further betting", async function () {
-    const { oracle, alice, market, mint } = await deploy();
-    const junctionId = ethers.id("bkc-signal-1");
+    const { oracle, alice, market, mint, jId } = await deploy();
+    const junctionId = jId;
 
     await market.connect(oracle).openMarket(junctionId);
     await mint(alice, 2n * 1_000_000n);
@@ -67,8 +68,8 @@ describe("AmberMarket", function () {
   });
 
   it("settles and pays winners proportionally", async function () {
-    const { oracle, alice, bob, feeRecipient, market, usdc, mint } = await deploy();
-    const junctionId = ethers.id("bkc-signal-1");
+    const { oracle, alice, bob, feeRecipient, market, usdc, mint, jId } = await deploy();
+    const junctionId = jId;
 
     await market.connect(oracle).openMarket(junctionId);
 
@@ -98,5 +99,7 @@ describe("AmberMarket", function () {
     const bobAfter = await usdc.balanceOf(bob.address);
     expect(bobAfter - bobBefore).to.equal(0n);
   });
+
+  // tolerance math is currently fixed at ±15% around the count onchain.
 });
 

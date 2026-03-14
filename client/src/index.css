@@ -4,26 +4,51 @@
 
 @layer base {
   :root {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
-    --card: 0 0% 4%;
-    --card-foreground: 0 0% 100%;
-    --popover: 0 0% 4%;
-    --popover-foreground: 0 0% 100%;
-    --primary: 38 90% 55%;
-    --primary-foreground: 0 0% 0%;
-    --secondary: 0 0% 10%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 10%;
-    --muted-foreground: 0 0% 60%;
-    --accent: 38 90% 55%;
-    --accent-foreground: 0 0% 0%;
-    --destructive: 0 84% 60%;
+    /* ── Deep dark palette ── */
+    --background: 225 15% 5%;
+    --foreground: 210 20% 95%;
+
+    --card: 225 15% 8%;
+    --card-foreground: 210 20% 95%;
+    --card-hover: 225 15% 10%;
+
+    --popover: 225 15% 8%;
+    --popover-foreground: 210 20% 95%;
+
+    /* ── Amber / Gold accent ── */
+    --primary: 38 100% 55%;
+    --primary-foreground: 225 15% 5%;
+
+    --secondary: 225 12% 14%;
+    --secondary-foreground: 210 20% 85%;
+
+    --muted: 225 12% 14%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 38 90% 50%;
+    --accent-foreground: 225 15% 5%;
+
+    /* ── Semantic ── */
+    --destructive: 0 72% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 12%;
-    --input: 0 0% 12%;
-    --ring: 38 90% 55%;
-    --radius: 0.5rem;
+
+    --success: 160 70% 44%;
+    --success-foreground: 0 0% 5%;
+
+    --warning: 38 100% 55%;
+    --warning-foreground: 0 0% 5%;
+
+    --info: 210 80% 60%;
+    --info-foreground: 0 0% 5%;
+
+    /* ── Surfaces ── */
+    --border: 225 12% 16%;
+    --input: 225 12% 14%;
+    --ring: 38 100% 55%;
+    --radius: 0.75rem;
+
+    /* ── Overlay ── */
+    --overlay: 225 30% 5%;
   }
 }
 
@@ -31,8 +56,175 @@
   * {
     @apply border-border;
   }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
   body {
-    @apply bg-background text-foreground;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  /* JetBrains Mono for data elements */
+  .font-data {
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
   }
 }
+
+@layer utilities {
+  /* Glassmorphism surface */
+  .glass {
+    background: linear-gradient(
+      135deg,
+      hsla(225, 15%, 10%, 0.7),
+      hsla(225, 15%, 6%, 0.8)
+    );
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid hsla(225, 15%, 25%, 0.2);
+  }
+
+  .glass-hover:hover {
+    background: linear-gradient(
+      135deg,
+      hsla(225, 15%, 12%, 0.8),
+      hsla(225, 15%, 8%, 0.9)
+    );
+    border-color: hsla(38, 100%, 55%, 0.2);
+  }
+
+  /* Amber glow */
+  .glow-amber {
+    box-shadow: 0 0 20px hsla(38, 100%, 55%, 0.15),
+                0 0 60px hsla(38, 100%, 55%, 0.05);
+  }
+
+  .glow-amber-strong {
+    box-shadow: 0 0 20px hsla(38, 100%, 55%, 0.3),
+                0 0 60px hsla(38, 100%, 55%, 0.1);
+  }
+
+  /* Success glow (green) */
+  .glow-green {
+    box-shadow: 0 0 20px hsla(160, 70%, 44%, 0.15),
+                0 0 60px hsla(160, 70%, 44%, 0.05);
+  }
+
+  /* Gradient text */
+  .text-gradient-amber {
+    background: linear-gradient(135deg, hsl(38, 100%, 55%), hsl(32, 100%, 65%));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-gold {
+    background: linear-gradient(135deg, hsl(38, 100%, 65%), hsl(45, 100%, 70%), hsl(38, 100%, 55%));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Subtle noise texture */
+  .surface-noise {
+    position: relative;
+  }
+  .surface-noise::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    opacity: 0.03;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.5'/%3E%3C/svg%3E");
+    background-size: 128px;
+  }
+
+  /* Phase colors */
+  .phase-red { color: hsl(0, 72%, 55%); }
+  .phase-green { color: hsl(160, 70%, 44%); }
+  .phase-amber { color: hsl(38, 100%, 55%); }
+  .phase-idle { color: hsl(215, 15%, 55%); }
+
+  .bg-phase-red { background: hsla(0, 72%, 55%, 0.12); border-color: hsla(0, 72%, 55%, 0.25); }
+  .bg-phase-green { background: hsla(160, 70%, 44%, 0.12); border-color: hsla(160, 70%, 44%, 0.25); }
+  .bg-phase-amber { background: hsla(38, 100%, 55%, 0.12); border-color: hsla(38, 100%, 55%, 0.25); }
+  .bg-phase-idle { background: hsla(215, 15%, 55%, 0.12); border-color: hsla(215, 15%, 55%, 0.25); }
+}
+
+/* ── Animations ── */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes countdown-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade-in { animation: fade-in 0.5s ease-out; }
+.animate-fade-in-up { animation: fade-in-up 0.6s ease-out; }
+.animate-slide-right { animation: slide-in-right 0.5s ease-out; }
+.animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+.animate-shimmer {
+  background-size: 200% auto;
+  animation: shimmer 3s linear infinite;
+}
+.animate-countdown { animation: countdown-pulse 1s ease-in-out infinite; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+.animate-spin-slow { animation: spin-slow 8s linear infinite; }
+
+/* Delay utilities */
+.delay-100 { animation-delay: 100ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }

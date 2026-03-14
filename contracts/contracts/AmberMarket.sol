@@ -47,6 +47,7 @@ contract AmberMarket is Ownable {
     address public feeRecipient;
 
     mapping(uint256 => mapping(address => Bet)) public bets;
+    mapping(uint8 => uint256) public rangeBuckets;
     mapping(uint256 => address[]) private bettors;
 
     event MarketOpened(uint256 indexed marketId, bytes32 junctionId, uint256 timestamp);
@@ -62,7 +63,13 @@ contract AmberMarket is Ownable {
         _;
     }
 
-    constructor(address owner_, address usdc_, address oracle_, address feeRecipient_, uint16 platformFeeBps_)
+    constructor(
+        address owner_,
+        address usdc_,
+        address oracle_,
+        address feeRecipient_,
+        uint16 platformFeeBps_
+    )
         Ownable(owner_)
     {
         require(usdc_ != address(0), "INVALID_USDC");
@@ -140,6 +147,9 @@ contract AmberMarket is Ownable {
         bettors[marketId].push(msg.sender);
 
         currentMarket.totalStaked += stakeAmount;
+
+        uint8 bucket = uint8((uint256(rangeMin) + uint256(rangeMax)) / 2);
+        rangeBuckets[bucket] += stakeAmount;
 
         emit BetPlaced(marketId, msg.sender, rangeMin, rangeMax, stakeAmount);
     }
