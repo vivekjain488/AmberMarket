@@ -1,13 +1,42 @@
-# Sample Hardhat Project
+# AmberMarket Contracts (Hardhat)
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
+This package compiles, tests, and deploys AmberMarket smart contracts.
 
-Try running some of the following tasks:
+## Important
 
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.js
+Hardhat is not hosted as a server. You run it locally/CI to deploy contracts to a blockchain network.
+
+## Setup
+
+```bash
+cd contracts
+npm install
+cp .env.example .env
 ```
+
+Set at least:
+
+- `ORACLE_PRIVATE_KEY`
+- `BASE_SEPOLIA_RPC`
+
+## Commands
+
+- `npm run compile`
+- `npm run test`
+- `npm run node`
+- `npm run deploy:localhost`
+- `npm run deploy:sepolia`
+- `npm run deploy:base-sepolia`
+
+## Deployment output
+
+After a deploy, the script will:
+
+1. Print deployed contract addresses.
+2. Write deployment metadata to `contracts/deployments/<network>.json`.
+3. Print copy-paste env snippets for Render and Vercel.
+4. Auto-update local `../server/.env` and `../client/.env` when those files exist.
+
+## Recommended production target
+
+Use Base Sepolia (`--network baseSepolia`) for the deployed testnet setup used by frontend/backend.

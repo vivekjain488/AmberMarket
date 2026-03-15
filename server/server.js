@@ -15,7 +15,12 @@ const { junctions, getJunctionById } = require("./junctions");
 const { getCctvCameras, getCctvBySlug } = require("./cctvData");
 
 const PORT = Number(process.env.PORT || 3001);
-const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+const CLIENT_ORIGINS = String(process.env.CLIENT_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const ENABLE_CV_ORACLE = String(process.env.ENABLE_CV_ORACLE || "true").toLowerCase() !== "false";
+const PYTHON_EXECUTABLE = process.env.PYTHON_EXECUTABLE || "python";
 
 const BASE_SEPOLIA_RPC = process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org";
 const ORACLE_PRIVATE_KEY = process.env.ORACLE_PRIVATE_KEY;
@@ -26,6 +31,21 @@ const ETH_MAINNET_RPC = process.env.ETH_MAINNET_RPC || "https://ethereum-rpc.pub
 const ENS_PARENT_NAME = process.env.ENS_PARENT_NAME || "ambermarket.eth";
 const ENS_REGISTRY_ADDRESS = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e";
 const ENS_LABEL_REGEX = /^[a-z0-9-]{3,63}$/;
+
+function isCorsAllowedOrigin(origin) {
+  if (!origin) return true;
+  return CLIENT_ORIGINS.includes(origin);
+}
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (isCorsAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin ${origin || "unknown"} not allowed by CORS`));
+  },
+  credentials: true,
+};
 
 // ─── ENS Namespace Client ────────────────────────────
 let ensClient = null;
@@ -50,11 +70,11 @@ const ENS_CLAIM_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: CLIENT_ORIGIN, credentials: true }));
+app.use(cors(corsOptions));
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: CLIENT_ORIGIN, credentials: true },
+  cors: corsOptions,
 });
 
 const amberMarketArtifact = require("./abi/AmberMarket.abi.json");
@@ -448,6 +468,13 @@ async function oracleSubmitCount(count) {
   // â”€â”€â”€ CV Pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   function startPythonCounting(junctionId, streamUrl) {
   stopPythonCounting();
+  if (!ENABLE_CV_ORACLE) {
+    engine.python.proc = null;
+    engine.python.lastCount = 0;
+    engine.python.frames = 0;
+    return;
+  }
+
   const scriptPath = path.join(__dirname, "cv_oracle", "count_cars.py");
   if (!fs.existsSync(scriptPath)) {
     engine.python.proc = null;
@@ -455,11 +482,17 @@ async function oracleSubmitCount(count) {
     engine.python.frames = 0;
     return;
   }
+
   const args = [scriptPath, "--junction_id", junctionId, "--stream_url", streamUrl];
-  const proc = spawn("python", args, { stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn(PYTHON_EXECUTABLE, args, { stdio: ["ignore", "pipe", "pipe"] });
   engine.python.proc = proc;
   engine.python.lastCount = 0;
   engine.python.frames = 0;
+
+  proc.on("error", (err) => {
+    console.warn(`[cv] Unable to start Python process (${PYTHON_EXECUTABLE}): ${err.message}`);
+    engine.python.proc = null;
+  });
 
   proc.stdout.on("data", (buf) => {
     const lines = buf.toString("utf8").split(/\r?\n/).filter(Boolean);
@@ -840,10 +873,11 @@ io.on("connection", (socket) => {
 // ─── Start ───────────────────────────────────────────
 server.listen(PORT, async () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`[config] Allowed client origins: ${CLIENT_ORIGINS.join(", ")}`);
+  console.log(`[config] CV oracle enabled: ${ENABLE_CV_ORACLE}`);
   await setupChain();
 
   if (engine.state === EngineState.IDLE) {
     transition(EngineState.PREDICTION_OPEN).catch((e) => console.error("[engine] Initial transition error:", e));
   }
 });
-// Trigger nodemon restart 2

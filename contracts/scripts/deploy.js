@@ -21,6 +21,17 @@ async function updateEnvFile(filePath, keysUpdates) {
   fs.writeFileSync(filePath, content, "utf8");
 }
 
+function saveDeploymentManifest(networkName, manifest) {
+  const deploymentsDir = path.join(__dirname, "../deployments");
+  if (!fs.existsSync(deploymentsDir)) {
+    fs.mkdirSync(deploymentsDir, { recursive: true });
+  }
+
+  const outPath = path.join(deploymentsDir, `${networkName}.json`);
+  fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return outPath;
+}
+
 async function main() {
   const [deployer, ...signers] = await hre.ethers.getSigners();
   const networkInfo = await hre.ethers.provider.getNetwork();
@@ -168,6 +179,21 @@ async function main() {
   }
   await updateEnvFile(clientEnv, clientEnvUpdates);
 
+  const deploymentManifest = {
+    project: "AmberMarket",
+    network: hre.network.name,
+    chainId,
+    deployer: deployer.address,
+    deployedAt: new Date().toISOString(),
+    contracts: {
+      amberToken: amberTokenAddress,
+      junctionRegistry: junctionRegistryAddress,
+      amberMarket: amberMarketAddress,
+      amberJunctionNFT: amberJunctionNFTAddress,
+    },
+  };
+  const manifestPath = saveDeploymentManifest(hre.network.name, deploymentManifest);
+
   console.log("\n✅ Deployment complete!");
   console.log("─────────────────────────────────");
   console.log("AmberToken:        ", amberTokenAddress);
@@ -176,6 +202,37 @@ async function main() {
   console.log("AmberJunctionNFT:  ", amberJunctionNFTAddress);
   console.log("─────────────────────────────────");
   console.log("✅ .env files updated automatically.");
+  console.log("✅ Deployment manifest:", manifestPath);
+
+  if (!isLocalNetwork) {
+    const rpcEnvKey = `${envPrefix}RPC`;
+    const marketEnvKey = `${envPrefix}CONTRACT_ADDRESS`;
+    const tokenEnvKey = `${envPrefix}AMBER_TOKEN_ADDRESS`;
+    const registryEnvKey = `${envPrefix}JUNCTION_REGISTRY_ADDRESS`;
+    const nftEnvKey = `${envPrefix}JUNCTION_NFT_ADDRESS`;
+
+    const viteMarketEnvKey = `VITE_${envPrefix}CONTRACT_ADDRESS`;
+    const viteTokenEnvKey = `VITE_${envPrefix}AMBER_TOKEN_ADDRESS`;
+    const viteRegistryEnvKey = `VITE_${envPrefix}JUNCTION_REGISTRY_ADDRESS`;
+    const viteNftEnvKey = `VITE_${envPrefix}JUNCTION_NFT_ADDRESS`;
+
+    const networkRpc = hre.network.name === "sepolia"
+      ? (process.env.SEPOLIA_RPC || "https://1rpc.io/sepolia")
+      : (process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org");
+
+    console.log("\n📌 Render env snippet:");
+    console.log(`${rpcEnvKey}=${networkRpc}`);
+    console.log(`${marketEnvKey}=${amberMarketAddress}`);
+    console.log(`${tokenEnvKey}=${amberTokenAddress}`);
+    console.log(`${registryEnvKey}=${junctionRegistryAddress}`);
+    console.log(`${nftEnvKey}=${amberJunctionNFTAddress}`);
+
+    console.log("\n📌 Vercel env snippet:");
+    console.log(`${viteMarketEnvKey}=${amberMarketAddress}`);
+    console.log(`${viteTokenEnvKey}=${amberTokenAddress}`);
+    console.log(`${viteRegistryEnvKey}=${junctionRegistryAddress}`);
+    console.log(`${viteNftEnvKey}=${amberJunctionNFTAddress}`);
+  }
 }
 
 main()
