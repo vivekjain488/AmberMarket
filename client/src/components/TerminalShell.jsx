@@ -2,9 +2,9 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Link, useLocation } from "react-router-dom";
 import { Activity, Home, BarChart3 } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useAccount, useReadContract } from "wagmi";
+import { useAccount, useReadContract, useChainId } from "wagmi";
 import { formatUnits } from "viem";
-import { config } from "@/lib/config";
+import { config, getChainConfig } from "@/lib/config";
 import { erc20Abi } from "@/lib/amberMarketAbi";
 import { useGameMode } from "@/contexts/GameModeContext";
 
@@ -15,6 +15,8 @@ const navLinks = [
 export function TerminalShell({ title, children, right }) {
   const location = useLocation();
   const { address, isConnected } = useAccount();
+    const chainId = useChainId();
+    const chainConfig = getChainConfig(chainId);
   const [myEns, setMyEns] = useState(null);
   
   useEffect(() => {
@@ -32,14 +34,14 @@ export function TerminalShell({ title, children, right }) {
 
   // Fetch AMBER balance
   const { data: amberBalance } = useReadContract({
-    address: config.amberTokenAddress,
+    address: chainConfig.amberTokenAddress,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [address],
     query: {
-      enabled: isConnected && !!address && !!config.amberTokenAddress,
-      refetchInterval: 10000,
-    }
+        enabled: isConnected && !!address && !!chainConfig.amberTokenAddress,
+        refetchInterval: 5000,
+      }
   });
 
   const formattedBalance = amberBalance != null ? Number(formatUnits(amberBalance, 18)).toFixed(0) : "0";

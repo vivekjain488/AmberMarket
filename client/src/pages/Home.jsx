@@ -67,6 +67,8 @@ function toJunctionBytes32(junctionId) {
    ═══════════════════════════════════════════════ */
 
 function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient, activePoolAmber, onPredict }) {
+  const jcChainId = useChainId();
+  const chainConfig = getChainConfig(jcChainId);
   const [ownerEns, setOwnerEns] = useState(null);
   
   // Resolve owner from NFT, then to ENS
@@ -231,7 +233,7 @@ export function Home() {
     fetchBalance();
     const intv = setInterval(fetchBalance, 10000);
     return () => clearInterval(intv);
-  }, [publicClient, address]);
+  }, [publicClient, address, chainConfig.amberTokenAddress]);
 
   const handlePredictClick = (junction) => {
     setSelectedJunctionForBet(junction);
@@ -331,10 +333,13 @@ export function Home() {
       const res = await fetch(`${config.serverUrl}/api/amber/faucet`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address })
+        body: JSON.stringify({ address, chainId })
       });
       const data = await res.json();
       if (res.ok) {
+        if (typeof data.balance === "string") {
+          setAmberBalance(parseUnits(data.balance, 18));
+        }
         const txText = data.txHash ? ` Tx: ${data.txHash.slice(0, 10)}…` : "";
         alert(`Success! Claimed 1000 $AMBER from faucet.${txText}`);
       } else {
@@ -383,12 +388,59 @@ export function Home() {
       setMyEns(null);
       return;
     }
-    fetch(`${config.serverUrl}/api/ens/lookup/${address}`)
-      .then(r => r.json())
-      .then(d => {
-        if (d.name) setMyEns(d.name);
-      })
-      .catch(console.error);
+
+    let cancelled = false;
+
+    async function loadEnsName() {
+      try {
+        const lookupRes = await fetch(`${config.serverUrl}/api/ens/lookup/${address}`);
+        const lookupData = await lookupRes.json();
+        if (cancelled) return;
+
+        if (lookupData?.name) {
+          setMyEns(lookupData.name);
+          return;
+        }
+      } catch {
+        // fall through to local verification
+      }
+
+      try {
+        const savedLabel = typeof window !== "undefined"
+          ? localStorage.getItem("amber_lastEnsLabel")
+          : null;
+
+        if (!savedLabel) {
+          if (!cancelled) setMyEns(null);
+          return;
+        }
+
+        const verifyRes = await fetch(`${config.serverUrl}/api/ens/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: savedLabel, address }),
+        });
+
+        const verifyData = await verifyRes.json();
+        if (cancelled) return;
+
+        if (verifyRes.ok && verifyData?.verified && verifyData?.name) {
+          setMyEns(verifyData.name);
+        } else {
+          setMyEns(null);
+          if (typeof window !== "undefined") {
+            localStorage.removeItem("amber_lastEnsLabel");
+          }
+        }
+      } catch {
+        if (!cancelled) setMyEns(null);
+      }
+    }
+
+    loadEnsName();
+    return () => {
+      cancelled = true;
+    };
   }, [isConnected, address]);
 
   // When socket tells us the phase changed, re-fetch to stay in sync
@@ -428,7 +480,7 @@ export function Home() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [publicClient, marketState?.engineState]);
+  }, [publicClient, marketState?.engineState, chainConfig.contractAddress]);
 
   // Derive live phase info from socket for the active junction card
   const livePhase = marketState?.engineState || null;
@@ -653,4 +705,7 @@ export function Home() {
     </TerminalShell>
   );
 }
+
+
+
 

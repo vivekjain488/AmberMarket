@@ -228,13 +228,18 @@ export function PredictionModal({
             className={`w-full py-4 rounded-xl font-bold text-lg transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed ${isPracticeMode ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:shadow-lg hover:shadow-blue-500/20 shadow-md shadow-blue-500/20 hover:scale-[1.02] active:scale-[0.98]' : 'bg-gradient-to-r from-primary to-amber-500 text-primary-foreground hover:shadow-lg hover:shadow-amber-500/20 hover:scale-[1.02] active:scale-[0.98] shadow-md shadow-primary/20'}`}
           >
             {txLoading ? (
-              <span className="flex items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" /> {isPracticeMode ? "Recording Practice Bet..." : "Confirming Transaction…"}</span>
-            ) : (
-              <span className="flex items-center justify-center gap-2">
-                <Zap className="h-5 w-5" /> 
-                {isPracticeMode ? "Submit Practice Prediction" : "Submit Prediction"}
-              </span>
-            )}
+                <span className="flex items-center justify-center gap-2"><Loader2 className="h-5 w-5 animate-spin" /> {isPracticeMode ? "Recording Practice Bet..." : "Confirming Transaction..."}</span>
+              ) : !isStakeValid && stakeNum > 0 ? (
+                <span className="flex items-center justify-center gap-2 text-white/90">
+                  <AlertCircle className="h-5 w-5" />
+                  {isPracticeMode ? "Insufficient Practice Balance" : "Insufficient $AMBER Balance"}
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  <Zap className="h-5 w-5" />
+                  {isPracticeMode ? "Submit Practice Prediction" : "Submit Prediction"}
+                </span>
+              )}
           </button>
 
           {txStatus && (

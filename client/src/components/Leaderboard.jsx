@@ -33,7 +33,7 @@ export function Leaderboard() {
     async function resolveEnsBatch() {
       const unresolved = leaders
         .map((p) => p.address?.toLowerCase())
-        .filter((addr) => addr && !ensByAddress[addr]);
+        .filter((addr) => addr && ensByAddress[addr] === undefined);
 
       if (!unresolved.length) return;
 
@@ -42,9 +42,9 @@ export function Leaderboard() {
           try {
             const res = await fetch(`${config.serverUrl}/api/ens/lookup/${addr}`);
             const data = await res.json();
-            return [addr, data?.name || null];
+            return [addr, data?.name || false]; // Use false for 'checked, no ENS' to avoid truthiness bugs with !ensByAddress
           } catch {
-            return [addr, null];
+            return [addr, false];
           }
         })
       );
@@ -108,7 +108,7 @@ export function Leaderboard() {
               const isTop3 = i < 3;
               const normalizedAddress = p.address?.toLowerCase() || "";
               const isCurrentUser = Boolean(currentUser && normalizedAddress === currentUser.toLowerCase());
-              const displayName = ensByAddress[normalizedAddress] || `${p.address.slice(0, 6)}...${p.address.slice(-4)}`;
+              const displayName = ensByAddress[normalizedAddress] || p.address;
               const totalProfit = Number(p.totalProfit || 0);
               
               return (
@@ -121,12 +121,9 @@ export function Leaderboard() {
                   </td>
                   <td className="px-4 py-3 font-mono">
                     <div className="flex items-center gap-2">
-                      <span className={`font-semibold ${isTop3 ? 'text-foreground' : 'text-foreground/80'}`}>
+                      <span className={`font-semibold ${isTop3 ? 'text-foreground' : 'text-foreground/80'} ${ensByAddress[normalizedAddress] ? 'text-amber-400 font-bold' : ''}`}>
                         {displayName}
                       </span>
-                      {ensByAddress[normalizedAddress] && (
-                        <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">.eth</span>
-                      )}
                       {isCurrentUser && (
                         <span className="text-[10px] bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">YOU</span>
                       )}

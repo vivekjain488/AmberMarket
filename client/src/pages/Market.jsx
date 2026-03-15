@@ -385,7 +385,7 @@ export function Market() {
     fetchPool();
     const t = setInterval(fetchPool, 8000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [publicClient, chainConfig.contractAddress, phase, address]);
+}, [publicClient, chainConfig.contractAddress, phase, address, chainConfig.amberTokenAddress]);
 
   /* ── NFT Ownership & Gamified Pricing ── */
   useEffect(() => {

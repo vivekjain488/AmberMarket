@@ -22,20 +22,31 @@ const ORACLE_PRIVATE_KEY = process.env.ORACLE_PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const AMBER_TOKEN_ADDRESS = process.env.AMBER_TOKEN_ADDRESS;
 const NAMESPACE_API_KEY = process.env.NAMESPACE_API_KEY;
+const ETH_MAINNET_RPC = process.env.ETH_MAINNET_RPC || "https://ethereum-rpc.publicnode.com";
+const ENS_PARENT_NAME = process.env.ENS_PARENT_NAME || "ambermarket.eth";
+const ENS_REGISTRY_ADDRESS = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e";
+const ENS_LABEL_REGEX = /^[a-z0-9-]{3,63}$/;
 
 // ─── ENS Namespace Client ────────────────────────────
 let ensClient = null;
 if (NAMESPACE_API_KEY) {
   const { createOffchainClient } = require("@thenamespace/offchain-manager");
   ensClient = createOffchainClient({
-    mode: "mainnet",
+    mode: "sepolia",
     timeout: 5000,
-    defaultApiKey: NAMESPACE_API_KEY,
+    // Domain-based API keys must use domainApiKeys, not defaultApiKey
+    domainApiKeys: {
+      [ENS_PARENT_NAME]: NAMESPACE_API_KEY,
+    },
   });
   console.log("🟦 Namespace Offchain Client initialized.");
 } else {
   console.warn("⚠️ NAMESPACE_API_KEY not found in .env. Real ENS claiming will be disabled.");
 }
+
+// ─── Rate limiter for ENS claims (in-memory) ────────
+const ensClaimTimestamps = new Map(); // address -> lastClaimMs
+const ENS_CLAIM_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
 const app = express();
 app.use(express.json());
@@ -64,6 +75,73 @@ function now() {
 
 function isValidAddress(addr) {
   return typeof addr === "string" && /^0x[0-9a-fA-F]{40}$/i.test(addr);
+}
+
+function normalizeEnsLabel(label) {
+  return String(label || "").toLowerCase().trim();
+}
+
+function isValidEnsLabel(label) {
+  return ENS_LABEL_REGEX.test(label) && !label.startsWith("-") && !label.endsWith("-");
+}
+
+/**
+ * Verify subname ownership via Namespace SDK (offchain subnames).
+ * Falls back to on-chain ENS registry if SDK is not available.
+ */
+async function verifySubnameOwnership(label, address) {
+  const normalizedLabel = normalizeEnsLabel(label);
+  if (!isValidEnsLabel(normalizedLabel)) {
+    return { verified: false, error: "Invalid label format" };
+  }
+  if (!isValidAddress(address)) {
+    return { verified: false, error: "Missing or invalid address" };
+  }
+
+  const fullName = `${normalizedLabel}.${ENS_PARENT_NAME}`;
+
+  // Primary: use Namespace SDK to verify offchain subnames
+  if (ensClient) {
+    try {
+      const subname = await ensClient.getSingleSubname(fullName);
+      if (subname && subname.fullName) {
+        const subnameOwner = normalizeAddress(subname.owner || "");
+        const expectedOwner = normalizeAddress(address);
+        return {
+          verified: subnameOwner === expectedOwner,
+          name: fullName,
+          owner: subnameOwner || null,
+        };
+      }
+      return { verified: false, name: fullName, owner: null };
+    } catch (err) {
+      // SubnameNotFoundError means it doesn't exist
+      if (err.name === "SubnameNotFoundError" || err.status === 404) {
+        return { verified: false, name: fullName, owner: null };
+      }
+      console.error(`[ENS] Namespace verify error for ${fullName}:`, err.message);
+    }
+  }
+
+  // Fallback: on-chain ENS registry lookup
+  try {
+    const ensRegistryAbi = ["function owner(bytes32 node) view returns (address)"];
+    const ensReadProvider = new ethers.JsonRpcProvider(ETH_MAINNET_RPC);
+    const ensRegistry = new ethers.Contract(ENS_REGISTRY_ADDRESS, ensRegistryAbi, ensReadProvider);
+    const node = ethers.namehash(fullName);
+    const owner = await ensRegistry.owner(node);
+    const ownerNormalized = normalizeAddress(owner);
+    const expectedOwner = normalizeAddress(address);
+
+    return {
+      verified: ownerNormalized === expectedOwner && ownerNormalized !== normalizeAddress(ethers.ZeroAddress),
+      name: fullName,
+      owner: ownerNormalized || null,
+    };
+  } catch (err) {
+    console.error(`[ENS] On-chain verify fallback error for ${fullName}:`, err.message);
+    return { verified: false, name: fullName, error: "Verification unavailable" };
+  }
 }
 
 // ─── Game Engine State Machine ───────────────────────
@@ -132,62 +210,89 @@ function updateElo(address, won) {
   }
 }
 
-let provider = null;
-let signer = null;
-let amberMarket = null;
-let amberToken = null;
+const providers = {};
+const signers = {};
+const amberMarkets = {};
+const amberTokens = {};
 
-async function updatePlayerStatsFromSettlement(settledMarketId) {
-  if (!amberMarket || settledMarketId == null) return;
-
-  try {
-    const bettors = await amberMarket.getBettors(settledMarketId);
-    if (!Array.isArray(bettors) || bettors.length === 0) return;
-
-    const market = await amberMarket.getMarket(settledMarketId);
-    const netPool = BigInt(market.netPool || 0n);
-    const totalWeightedWinning = BigInt(market.totalWeightedWinning || 0n);
-
-    for (const bettorAddress of bettors) {
-      try {
-        const bettor = normalizeAddress(bettorAddress);
-        if (!bettor) continue;
-
-        const stats = getOrCreateStats(bettor);
-        const weight = BigInt(await amberMarket.betWeights(settledMarketId, bettorAddress));
-        const bet = await amberMarket.getBet(settledMarketId, bettorAddress);
-        const stakeAmount = BigInt(bet.stakeAmount || 0n);
-        const won = weight > 0n;
-
-        updateElo(bettor, won);
-
-        let payout = 0n;
-        if (won && totalWeightedWinning > 0n) {
-          payout = (weight * netPool) / totalWeightedWinning;
-        }
-
-        const profit = payout - stakeAmount;
-        stats.totalProfit += Number(ethers.formatUnits(profit, 18));
-      } catch (err) {
-        console.warn("[stats] Failed to update bettor stats:", err.message);
-      }
-    }
-  } catch (err) {
-    console.warn("[stats] Failed to update settlement stats:", err.message);
+const chains = [
+  {
+    id: 11155111,
+    name: "Sepolia",
+    rpc: process.env.SEPOLIA_RPC,
+    contract: process.env.SEPOLIA_CONTRACT_ADDRESS,
+    token: process.env.SEPOLIA_AMBER_TOKEN_ADDRESS
+  },
+  {
+    id: 84532,
+    name: "Base Sepolia",
+    rpc: process.env.BASE_SEPOLIA_RPC,
+    contract: process.env.BASE_SEPOLIA_CONTRACT_ADDRESS,
+    token: process.env.BASE_SEPOLIA_AMBER_TOKEN_ADDRESS
   }
-}
+];
 
-// ─── Socket helpers ──────────────────────────────────
-function emitState() {
-  io.emit("junction:state_change", {
-    junctionId: engine.activeJunctionId,
-    engineState: engine.state,
-    stateSinceMs: engine.stateSinceMs,
-    countdown: engine.countdown,
-    marketId: engine.marketId,
-    lastSettlement: engine.lastSettlement,
-    timestamp: Math.floor(Date.now() / 1000),
-  });
+async function setupChain() {
+  const isValidKey = /^(0x)?[0-9a-fA-F]{64}$/i.test(ORACLE_PRIVATE_KEY || "");
+
+  if (!hasValidAmberMarketAbi || !hasValidAmberTokenAbi || !isValidKey) {
+    console.warn("\n[!] Missing ABI or Private Key. On-chain disabled.");
+    return;
+  }
+
+  for (const chain of chains) {
+    if (!chain.rpc) {
+      console.warn(`[!] Skipping ${chain.name}: missing RPC URL.`);
+      continue;
+    }
+
+    try {
+      const provider = new ethers.JsonRpcProvider(chain.rpc);
+      const signer = new ethers.Wallet(ORACLE_PRIVATE_KEY, provider);
+      providers[chain.id] = provider;
+      signers[chain.id] = signer;
+
+      const contractAddress =
+        typeof chain.contract === "string" ? chain.contract.toLowerCase() : chain.contract;
+      const tokenAddress =
+        typeof chain.token === "string" ? chain.token.toLowerCase() : chain.token;
+
+      let marketConnected = false;
+      let tokenConnected = false;
+
+      if (ethers.isAddress(contractAddress)) {
+        try {
+          const market = new ethers.Contract(contractAddress, amberMarketAbi, signer);
+          await market.marketId();
+          amberMarkets[chain.id] = market;
+          marketConnected = true;
+        } catch (marketErr) {
+          console.error(`[!] Failed to connect ${chain.name} market:`, marketErr.message);
+        }
+      } else {
+        console.warn(`[!] Skipping ${chain.name} market: invalid contract address.`);
+      }
+
+      if (ethers.isAddress(tokenAddress)) {
+        try {
+          const token = new ethers.Contract(tokenAddress, amberTokenAbi, signer);
+          await token.symbol();
+          amberTokens[chain.id] = token;
+          tokenConnected = true;
+        } catch (tokenErr) {
+          console.error(`[!] Failed to connect ${chain.name} token:`, tokenErr.message);
+        }
+      } else {
+        console.warn(`[!] Skipping ${chain.name} token: invalid token address.`);
+      }
+
+      if (marketConnected || tokenConnected) {
+        console.log(`[✓] On-chain mode enabled for ${chain.name} (market=${marketConnected ? "on" : "off"}, token=${tokenConnected ? "on" : "off"})`);
+      }
+    } catch (err) {
+      console.error(`[!] Failed to connect ${chain.name}:`, err.message);
+    }
+  }
 }
 
 function getMarketSnapshot() {
@@ -198,123 +303,150 @@ function getMarketSnapshot() {
     countdown: engine.countdown,
     marketId: engine.marketId,
     lastSettlement: engine.lastSettlement,
-    python: { currentCount: engine.python.lastCount, frames: engine.python.frames, running: Boolean(engine.python.proc) },
+    python: {
+      currentCount: engine.python.lastCount,
+      frames: engine.python.frames,
+      running: Boolean(engine.python.proc),
+    },
   };
 }
 
-// ─── Chain Setup ─────────────────────────────────────
-async function setupChain() {
-  const isValidKey = /^(0x)?[0-9a-fA-F]{64}$/i.test(ORACLE_PRIVATE_KEY || "");
-
-  if (!hasValidAmberMarketAbi || !hasValidAmberTokenAbi) {
-    console.warn("\n[!] On-chain features disabled:");
-    if (!hasValidAmberMarketAbi) {
-      console.warn("    AmberMarket ABI is invalid or missing in server/abi/AmberMarket.abi.json.");
-    }
-    if (!hasValidAmberTokenAbi) {
-      console.warn("    AmberToken ABI is invalid or missing in server/abi/AmberToken.abi.json.");
-    }
-    console.warn("[!] The server will run in simulation mode.\n");
-    return;
-  }
-
-  if (!isValidAddress(CONTRACT_ADDRESS) || !isValidAddress(AMBER_TOKEN_ADDRESS) || !isValidKey) {
-    console.warn("\n[!] On-chain features disabled:");
-    if (!isValidAddress(CONTRACT_ADDRESS)) {
-      console.warn("    CONTRACT_ADDRESS is missing or not a valid Ethereum address.");
-    }
-    if (!isValidAddress(AMBER_TOKEN_ADDRESS)) {
-      console.warn("    AMBER_TOKEN_ADDRESS is missing or not a valid Ethereum address.");
-    }
-    if (!isValidKey) {
-      console.warn("    ORACLE_PRIVATE_KEY is missing or invalid.");
-    }
-    console.warn("[!] The server will run in simulation mode.\n");
-    return;
-  }
-
-  try {
-    provider = new ethers.JsonRpcProvider(BASE_SEPOLIA_RPC);
-    signer = new ethers.Wallet(ORACLE_PRIVATE_KEY, provider);
-    amberMarket = new ethers.Contract(CONTRACT_ADDRESS, amberMarketAbi, signer);
-    amberToken = new ethers.Contract(AMBER_TOKEN_ADDRESS, amberTokenAbi, signer);
-
-    await amberMarket.marketId();
-    await amberToken.symbol();
-    console.log("[✓] On-chain mode enabled. Contract:", CONTRACT_ADDRESS);
-
-    // Some public RPCs (like PublicNode) do not support eth_newFilter / eth_getFilterChanges.
-    // Instead of using contract.on(), which crashes with "filter not found",
-    // we'll rely on the server's own state machine to broadcast settlements to the UI,
-    // and let the client fetch their own BetPlaced events via Viem if they want history.
-    console.log("ℹ️ Contract event polling (eth_getFilterChanges) disabled for public RPC compatibility.");
-
-  } catch (err) {
-    console.warn("\n[!] Failed to connect to on-chain contract:", err.message);
-    console.warn("[!] Falling back to simulation mode.\n");
-    provider = null;
-    signer = null;
-    amberMarket = null;
-    amberToken = null;
-  }
+function emitState() {
+  io.emit("junction:state_change", getMarketSnapshot());
 }
 
-// ─── Oracle Functions ────────────────────────────────
-async function oracleOpenMarket(junctionId) {
-  if (!amberMarket) return { mode: "simulated" };
-  try {
-    const currentId = await amberMarket.marketId();
-    if (currentId > 0n) {
-      const m = await amberMarket.markets(currentId);
-      if (m.marketState === 0n) { // 0 = OPEN
-        console.log(`[oracle] Market ${currentId} is already OPEN`);
-        return { mode: "onchain", marketId: Number(currentId) };
+function getPrimaryChainInfo() {
+  const connectedChainIds = [
+    ...new Set([...Object.keys(amberTokens), ...Object.keys(amberMarkets)]),
+  ].map(Number);
+  const connectedChainId = Number(connectedChainIds[0] || 0);
+  const connectedChain = chains.find((chain) => chain.id === connectedChainId);
+  const fallbackChain = chains.find((chain) => chain.id === 84532) || chains[0] || {};
+  const source = connectedChain || fallbackChain;
+
+  return {
+    rpc: source.rpc || BASE_SEPOLIA_RPC,
+    contractAddress: source.contract || CONTRACT_ADDRESS || null,
+    amberTokenAddress: source.token || AMBER_TOKEN_ADDRESS || null,
+  };
+}
+
+async function updatePlayerStatsFromSettlement(settledMarketId) {
+    if (Object.keys(amberMarkets).length === 0 || settledMarketId == null) return;
+
+    for (const amberMarket of Object.values(amberMarkets)) {
+      try {
+          const bettors = await amberMarket.getBettors(settledMarketId);
+          if (!Array.isArray(bettors) || bettors.length === 0) continue;
+
+          const market = await amberMarket.getMarket(settledMarketId);
+          const netPool = BigInt(market.netPool || 0n);
+          const totalWeightedWinning = BigInt(market.totalWeightedWinning || 0n);   
+
+          for (const bettorAddress of bettors) {
+              try {
+                  const bettor = normalizeAddress(bettorAddress);
+                  if (!bettor) continue;
+
+                  const stats = getOrCreateStats(bettor);
+                  const weight = BigInt(await amberMarket.betWeights(settledMarketId, bettorAddress));
+                  const bet = await amberMarket.getBet(settledMarketId, bettorAddress); 
+                  const stakeAmount = BigInt(bet.stakeAmount || 0n);
+                  const won = weight > 0n;
+
+                  updateElo(bettor, won);
+
+                  let payout = 0n;
+                  if (won && totalWeightedWinning > 0n) {
+                      payout = (weight * netPool) / totalWeightedWinning;
+                  }
+                  
+                  stats.totalBets++;
+                  stats.totalVolume += Number(ethers.formatUnits(stakeAmount, 18));
+                  if (won) {
+                      stats.totalWins++;
+                      stats.totalEarnings += Number(ethers.formatUnits(payout, 18));
+                  } else {
+                      stats.totalLosses++;
+                  }
+              } catch (innerErr) {
+                  console.error(`[stats] inner loop error on ${bettorAddress}:`, innerErr.message);
+              }
+          }
+      } catch (err) {
+          console.error("[stats] updatePlayerStatsFromSettlement failed for a chain:", err.message);
       }
     }
+}
 
-    const tx = await amberMarket.openMarket(ethers.id(junctionId));
-    const receipt = await tx.wait();
-    const mId = await amberMarket.marketId();
-    return { mode: "onchain", txHash: receipt.hash, marketId: Number(mId) };
-  } catch (err) {
-    console.error("[oracle] openMarket failed:", err.message);
-    return { mode: "simulated", error: err.message };
-  }
+  // â”€â”€â”€ Oracle Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+async function oracleOpenMarket(junctionId) {
+    if (Object.keys(amberMarkets).length === 0) return { mode: "simulated" };
+    let mId = null;
+    let res = null;
+    for (const amberMarket of Object.values(amberMarkets)) {
+      try {
+        const currentId = await amberMarket.marketId();
+        if (currentId > 0n) {
+          const m = await amberMarket.markets(currentId);
+          if (m.marketState === 0n) { // 0 = OPEN
+            res = { mode: "onchain", marketId: Number(currentId) };
+            mId = Number(currentId);
+            continue;
+          }
+        }
+        const tx = await amberMarket.openMarket(ethers.id(junctionId));
+        const receipt = await tx.wait();
+        mId = Number(await amberMarket.marketId());
+        res = { mode: "onchain", txHash: receipt.hash, marketId: mId };
+      } catch (err) {
+        console.error("[oracle] openMarket failed for a chain:", err.message);
+        res = { mode: "simulated", error: err.message };
+      }
+    }
+    return res || { mode: "onchain", marketId: mId };
 }
 async function oracleLockMarket() {
-  if (!amberMarket) return { mode: "simulated" };
-  try {
-    const currentId = await amberMarket.marketId();
-    if (currentId > 0n) {
-      const m = await amberMarket.markets(currentId);
-      if (m.marketState === 1n) { // 1 = LOCKED
-        console.log(`[oracle] Market ${currentId} is ALREADY LOCKED`);
-        return { mode: "onchain" };
+    if (Object.keys(amberMarkets).length === 0) return { mode: "simulated" };
+    let resMsg = null;
+    for (const amberMarket of Object.values(amberMarkets)) {
+      try {
+        const currentId = await amberMarket.marketId();
+        if (currentId > 0n) {
+          const m = await amberMarket.markets(currentId);
+          if (m.marketState === 1n) { // 1 = LOCKED
+            resMsg = { mode: "onchain" };
+            continue;
+          }
+        }
+        const tx = await amberMarket.lockMarket();
+        const receipt = await tx.wait();
+        resMsg = { mode: "onchain", txHash: receipt.hash };
+      } catch (err) {
+        console.error("[oracle] lockMarket failed for a chain:", err.message);
+        resMsg = { mode: "simulated", error: err.message };
       }
     }
-
-    const tx = await amberMarket.lockMarket();
-    const receipt = await tx.wait();
-    return { mode: "onchain", txHash: receipt.hash };
-  } catch (err) {
-    console.error("[oracle] lockMarket failed:", err.message);
-    return { mode: "simulated", error: err.message };
-  }
+    return resMsg || { mode: "onchain" };
 }
 async function oracleSubmitCount(count) {
-  if (!amberMarket) return { mode: "simulated" };
-  try {
-    const tx = await amberMarket.submitCount(count);
-    const receipt = await tx.wait();
-    return { mode: "onchain", txHash: receipt.hash };
-  } catch (err) {
-    console.error("[oracle] submitCount failed:", err.message);
-    return { mode: "simulated", error: err.message };
-  }
+    if (Object.keys(amberMarkets).length === 0) return { mode: "simulated" };
+    let resMsg = null;
+    for (const amberMarket of Object.values(amberMarkets)) {
+      try {
+        const tx = await amberMarket.submitCount(count);
+        const receipt = await tx.wait();
+        resMsg = { mode: "onchain", txHash: receipt.hash };
+      } catch (err) {
+        console.error("[oracle] submitCount failed for a chain:", err.message);
+        resMsg = { mode: "simulated", error: err.message };
+      }
+    }
+    return resMsg || { mode: "onchain" };
 }
 
-// ─── CV Pipeline ─────────────────────────────────────
-function startPythonCounting(junctionId, streamUrl) {
+  // â”€â”€â”€ CV Pipeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  function startPythonCounting(junctionId, streamUrl) {
   stopPythonCounting();
   const scriptPath = path.join(__dirname, "cv_oracle", "count_cars.py");
   if (!fs.existsSync(scriptPath)) {
@@ -431,20 +563,54 @@ async function transition(next) {
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 // ── ENS ──
+app.get("/api/ens/check-availability", async (req, res) => {
+  const label = normalizeEnsLabel(req.query.label || "");
+  if (!label) return res.status(400).json({ error: "Missing label" });
+  if (!isValidEnsLabel(label)) return res.json({ available: false, reason: "Invalid format" });
+  if (!ensClient) return res.status(503).json({ error: "ENS not configured" });
+
+  try {
+    const fullName = `${label}.${ENS_PARENT_NAME}`;
+    const { isAvailable } = await ensClient.isSubnameAvailable(fullName);
+    res.json({ available: isAvailable, name: fullName });
+  } catch (error) {
+    console.error("[ENS] Availability check error:", error.message);
+    res.status(500).json({ error: "Failed to check availability" });
+  }
+});
+
 app.post("/api/ens/claim", async (req, res) => {
   const { label, address } = req.body;
   if (!label || !address) return res.status(400).json({ error: "Missing label or address" });
   if (!ensClient) return res.status(503).json({ error: "ENS API Key not configured on server" });
 
+  const normalizedLabel = normalizeEnsLabel(label);
+  if (!isValidEnsLabel(normalizedLabel)) {
+    return res.status(400).json({ error: "Invalid label format. Use 3-63 lowercase letters, numbers, or hyphens." });
+  }
+  if (!isValidAddress(address)) {
+    return res.status(400).json({ error: "Missing or invalid wallet address" });
+  }
+
+  // Rate limiting: 1 claim per address per cooldown window
+  const addrKey = normalizeAddress(address);
+  const lastClaim = ensClaimTimestamps.get(addrKey);
+  if (lastClaim && (Date.now() - lastClaim) < ENS_CLAIM_COOLDOWN_MS) {
+    const waitSec = Math.ceil((ENS_CLAIM_COOLDOWN_MS - (Date.now() - lastClaim)) / 1000);
+    return res.status(429).json({ error: `Rate limited. Try again in ${waitSec} seconds.` });
+  }
+
   try {
-    const parentName = "ambermarket.eth";
-    const subname = `${label}.${parentName}`;
+    const parentName = ENS_PARENT_NAME;
+    const subname = `${normalizedLabel}.${parentName}`;
+
+    // Check availability first
     const { isAvailable } = await ensClient.isSubnameAvailable(subname);
     if (!isAvailable) return res.status(409).json({ error: "Name is already taken" });
 
     const { ChainName } = require("@thenamespace/offchain-manager");
     await ensClient.createSubname({
-      label,
+      label: normalizedLabel,
       parentName,
       texts: [],
       addresses: [
@@ -455,11 +621,46 @@ app.post("/api/ens/claim", async (req, res) => {
       metadata: [{ key: 'sender', value: address }],
     });
 
+    // Record successful claim timestamp
+    ensClaimTimestamps.set(addrKey, Date.now());
+
     console.log(`✅ ENS Registered: ${subname} -> ${address}`);
     res.json({ success: true, name: subname });
   } catch (error) {
-    console.error("ENS Claim Error:", error);
-    res.status(500).json({ error: error.message || "Failed to create ENS subname" });
+    // Clean log — avoid dumping entire Axios response
+    const errMsg = error?.response?.data?.message || error.message;
+    console.error("ENS Claim Error:", errMsg);
+    
+    // Axios HTTP errors from Namespace API
+    if (error?.response?.status === 401 || error?.response?.status === 403) {
+      return res.status(503).json({ error: "ENS API key is unauthorized. Regenerate with 'Domain based' scope at app.namespace.ninja." });
+    }
+    if (error?.response?.status === 409 || error.name === "SubnameAlreadyExistsError") {
+      return res.status(409).json({ error: "This name is already registered" });
+    }
+    if (error?.response?.status === 429 || error.name === "RateLimitError") {
+      return res.status(429).json({ error: "Too many requests. Please try again later." });
+    }
+    
+    res.status(500).json({ error: errMsg || "Failed to create ENS subname" });
+  }
+});
+
+app.post("/api/ens/verify", async (req, res) => {
+  const { label, address } = req.body || {};
+  if (!label || !address) {
+    return res.status(400).json({ error: "Missing label or address" });
+  }
+
+  try {
+    const verification = await verifySubnameOwnership(label, address);
+    if (verification.error) {
+      return res.status(400).json({ error: verification.error, verified: false });
+    }
+    res.json(verification);
+  } catch (error) {
+    console.error("ENS Verify Error:", error);
+    res.status(500).json({ error: error.message || "Failed to verify ENS subname", verified: false });
   }
 });
 
@@ -470,7 +671,7 @@ app.get("/api/ens/lookup/:address", async (req, res) => {
 
   try {
     const page = await ensClient.getFilteredSubnames({
-      parentName: "ambermarket.eth",
+      parentName: ENS_PARENT_NAME,
       owner: address,
       page: 1,
       size: 1,
@@ -503,43 +704,44 @@ app.get("/api/player/:address/stats", (req, res) => {
 
 // ── $AMBER Faucet ──
 app.post("/api/amber/faucet", async (req, res) => {
-  const { address } = req.body;
-  if (!address || !isValidAddress(address)) {
-    return res.status(400).json({ error: "Missing or invalid address" });
-  }
-
-  if (!provider || !signer || !amberToken) {
-    return res.status(503).json({ error: "On-chain mode not available" });
-  }
-
-  try {
-    const amount = ethers.parseUnits("1000", 18);
-    let tx;
-    let method = "mint";
-
-    try {
-      tx = await amberToken.mint(address, amount);
-    } catch (mintErr) {
-      method = "transfer";
-      tx = await amberToken.transfer(address, amount);
-      console.warn("[faucet] mint failed, fallback to transfer:", mintErr.message);
+    const { address, chainId } = req.body;
+    if (!address || !isValidAddress(address)) {
+        return res.status(400).json({ error: "Missing or invalid address" });
     }
 
-    const receipt = await tx.wait();
-    const balance = await amberToken.balanceOf(address);
+    let targetChainId = chainId ? Number(chainId) : 11155111;
+    const aToken = amberTokens[targetChainId];
 
-    console.log(`🪙 Faucet: sent 1000 $AMBER to ${address} via ${method}`);
-    res.json({
-      success: true,
-      amount: "1000",
-      method,
-      txHash: receipt.hash,
-      balance: ethers.formatUnits(balance, 18),
-    });
-  } catch (err) {
-    console.error("Faucet error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
+    if (!aToken) {
+        return res.status(503).json({ error: "On-chain mode not available for this chain" });
+    }
+
+    try {
+        const amount = ethers.parseUnits("1000", 18);
+        let tx;
+        let method = "mint";
+
+        try {
+            tx = await aToken.mint(address, amount);
+        } catch (mintErr) {
+            method = "transfer";
+            tx = await aToken.transfer(address, amount);
+        }
+
+        const receipt = await tx.wait();
+        const balance = await aToken.balanceOf(address);
+
+        res.json({
+            success: true,
+            amount: "1000",
+            method,
+            txHash: receipt.hash,
+            balance: ethers.formatUnits(balance, 18).toString()
+        });
+    } catch (err) {
+        console.error("Faucet error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ── CCTV ──
@@ -621,13 +823,15 @@ app.post("/api/oracle/submit", async (req, res) => {
 
 // ─── Socket.IO ───────────────────────────────────────
 io.on("connection", (socket) => {
+  const primaryChain = getPrimaryChainInfo();
+
   socket.emit("server:hello", {
     ok: true,
     chain: {
-      baseSepoliaRpc: BASE_SEPOLIA_RPC,
-      contractAddress: isValidAddress(CONTRACT_ADDRESS) ? CONTRACT_ADDRESS : null,
-      amberTokenAddress: isValidAddress(AMBER_TOKEN_ADDRESS) ? AMBER_TOKEN_ADDRESS : null,
-      onchainEnabled: Boolean(amberMarket),
+      baseSepoliaRpc: primaryChain.rpc,
+      contractAddress: isValidAddress(primaryChain.contractAddress) ? primaryChain.contractAddress : null,
+      amberTokenAddress: isValidAddress(primaryChain.amberTokenAddress) ? primaryChain.amberTokenAddress : null,
+      onchainEnabled: Object.keys(amberMarkets).length > 0 || Object.keys(amberTokens).length > 0,
     },
     market: getMarketSnapshot(),
   });
