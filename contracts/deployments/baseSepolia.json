@@ -1,0 +1,13 @@
+{
+  "project": "AmberMarket",
+  "network": "baseSepolia",
+  "chainId": 84532,
+  "deployer": "0x3Ea0530E2155a9534EC3d8EAeA523f19770fD6FB",
+  "deployedAt": "2026-03-15T02:08:58.021Z",
+  "contracts": {
+    "amberToken": "0x48550a6C841CbEf7bF228C864Ba6C75c0C547f94",
+    "junctionRegistry": "0x3f96d754aFeFB176a6C545BEEaF5A487A3e5F731",
+    "amberMarket": "0xb53C6B0D3B8f72Cb1b118e512454ab8752836cFB",
+    "amberJunctionNFT": "0xfD27C764C8064eceB7C511efD461AFeCBfd325a1"
+  }
+}
