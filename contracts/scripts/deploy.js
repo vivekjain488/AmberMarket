@@ -117,33 +117,54 @@ async function main() {
 
   // ─── 8. Update .env files ─────────────────────────────
   console.log("\n8. Updating .env files...");
+  
+  const envPrefix = hre.network.name === "baseSepolia" ? "BASE_SEPOLIA_" 
+                  : hre.network.name === "sepolia" ? "SEPOLIA_" 
+                  : "";
+                  
   const serverEnv = path.join(__dirname, "../../server/.env");
-  const serverEnvUpdates = {
-    CONTRACT_ADDRESS: amberMarketAddress,
-    AMBER_TOKEN_ADDRESS: amberTokenAddress,
-    JUNCTION_REGISTRY_ADDRESS: junctionRegistryAddress,
-    JUNCTION_NFT_ADDRESS: amberJunctionNFTAddress,
-    BASE_SEPOLIA_RPC: hre.network.name === "sepolia"
-      ? "https://1rpc.io/sepolia"
-      : (isLocalNetwork ? "http://127.0.0.1:8545" : (process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org")),
-  };
+  const serverEnvUpdates = {};
+  
   if (isLocalNetwork) {
-    serverEnvUpdates.ORACLE_PRIVATE_KEY = hardhatDefaultPrivateKey;
+    serverEnvUpdates["CONTRACT_ADDRESS"] = amberMarketAddress;
+    serverEnvUpdates["AMBER_TOKEN_ADDRESS"] = amberTokenAddress;
+    serverEnvUpdates["JUNCTION_REGISTRY_ADDRESS"] = junctionRegistryAddress;
+    serverEnvUpdates["JUNCTION_NFT_ADDRESS"] = amberJunctionNFTAddress;
+    serverEnvUpdates["ORACLE_PRIVATE_KEY"] = hardhatDefaultPrivateKey;
+    serverEnvUpdates["LOCAL_RPC"] = "http://127.0.0.1:8545";
+  } else {
+    serverEnvUpdates[`${envPrefix}CONTRACT_ADDRESS`] = amberMarketAddress;
+    serverEnvUpdates[`${envPrefix}AMBER_TOKEN_ADDRESS`] = amberTokenAddress;
+    serverEnvUpdates[`${envPrefix}JUNCTION_REGISTRY_ADDRESS`] = junctionRegistryAddress;
+    serverEnvUpdates[`${envPrefix}JUNCTION_NFT_ADDRESS`] = amberJunctionNFTAddress;
+    
+    if (hre.network.name === "sepolia") {
+      serverEnvUpdates["SEPOLIA_RPC"] = "https://1rpc.io/sepolia";
+    } else if (hre.network.name === "baseSepolia") {
+      serverEnvUpdates["BASE_SEPOLIA_RPC"] = process.env.BASE_SEPOLIA_RPC || "https://sepolia.base.org";
+    }
   }
   await updateEnvFile(serverEnv, serverEnvUpdates);
 
   const clientEnv = path.join(__dirname, "../../client/.env");
-  const clientEnvUpdates = {
-    VITE_CONTRACT_ADDRESS: amberMarketAddress,
-    VITE_AMBER_TOKEN_ADDRESS: amberTokenAddress,
-    VITE_JUNCTION_NFT_ADDRESS: amberJunctionNFTAddress,
-    VITE_JUNCTION_REGISTRY_ADDRESS: junctionRegistryAddress,
-    VITE_CHAIN_ID: String(chainId),
-  };
-  if (hre.network.name === "sepolia") {
-    clientEnvUpdates.VITE_SEPOLIA_RPC_URL = "https://1rpc.io/sepolia";
-  } else if (isLocalNetwork) {
-    clientEnvUpdates.VITE_LOCAL_RPC_URL = "http://127.0.0.1:8545";
+  const clientEnvUpdates = {};
+  
+  if (isLocalNetwork) {
+    clientEnvUpdates["VITE_CONTRACT_ADDRESS"] = amberMarketAddress;
+    clientEnvUpdates["VITE_AMBER_TOKEN_ADDRESS"] = amberTokenAddress;
+    clientEnvUpdates["VITE_JUNCTION_NFT_ADDRESS"] = amberJunctionNFTAddress;
+    clientEnvUpdates["VITE_JUNCTION_REGISTRY_ADDRESS"] = junctionRegistryAddress;
+    clientEnvUpdates["VITE_CHAIN_ID"] = String(chainId);
+    clientEnvUpdates["VITE_LOCAL_RPC_URL"] = "http://127.0.0.1:8545";
+  } else {
+    clientEnvUpdates[`VITE_${envPrefix}CONTRACT_ADDRESS`] = amberMarketAddress;
+    clientEnvUpdates[`VITE_${envPrefix}AMBER_TOKEN_ADDRESS`] = amberTokenAddress;
+    clientEnvUpdates[`VITE_${envPrefix}JUNCTION_NFT_ADDRESS`] = amberJunctionNFTAddress;
+    clientEnvUpdates[`VITE_${envPrefix}JUNCTION_REGISTRY_ADDRESS`] = junctionRegistryAddress;
+    
+    if (hre.network.name === "sepolia") {
+      clientEnvUpdates["VITE_SEPOLIA_RPC_URL"] = "https://1rpc.io/sepolia";
+    }
   }
   await updateEnvFile(clientEnv, clientEnvUpdates);
 
