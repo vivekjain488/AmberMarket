@@ -35,11 +35,11 @@ function buildJunctions() {
     lng: c.longitude ?? -121.5,
     road_count: 2,
     multiplier_tier: 1,
-    stream_url: c.streamingVideoURL,
+    stream_url: c.streamingVideoURL ? "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" : null,
     description: [c.nearbyPlace, c.route].filter(Boolean).join(" · ") || "Caltrans D3 CCTV",
     // Footage links (current + previous images and VM page)
-    currentImageURL: c.currentImageURL,
-    referenceImageUrls: c.referenceImageUrls || [],
+    currentImageURL: c.currentImageURL ? `https://picsum.photos/seed/${c.slug}/800/450` : null,
+    referenceImageUrls: [`https://picsum.photos/seed/${c.slug}-1/800/450`, `https://picsum.photos/seed/${c.slug}-2/800/450`],
     vmPageUrl: c.vmPageUrl,
   }));
 }
@@ -58,10 +58,10 @@ function getJunctionById(id) {
     lng: c.longitude ?? -121.5,
     road_count: 2,
     multiplier_tier: 1,
-    stream_url: c.streamingVideoURL,
+    stream_url: c.streamingVideoURL ? "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" : null,
     description: [c.nearbyPlace, c.route].filter(Boolean).join(" · ") || "Caltrans D3 CCTV",
-    currentImageURL: c.currentImageURL,
-    referenceImageUrls: c.referenceImageUrls || [],
+    currentImageURL: c.currentImageURL ? `https://picsum.photos/seed/${c.slug}/800/450` : null,
+    referenceImageUrls: [`https://picsum.photos/seed/${c.slug}-1/800/450`, `https://picsum.photos/seed/${c.slug}-2/800/450`],
     vmPageUrl: c.vmPageUrl,
   };
 }
