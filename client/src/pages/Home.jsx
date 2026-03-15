@@ -148,14 +148,24 @@ function JunctionCard({ junction, isActive, livePhase, timeLeftSec, publicClient
 
         {/* Live phase + timer on active junction */}
         {isActive && livePhase && (
-          <div className="absolute bottom-2 right-2 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm border border-border/30">
-            <Clock className="h-3 w-3 text-primary" />
-            <span className="text-[10px] font-mono font-bold text-primary">
-              {livePhase === "PREDICTION_OPEN" ? "Betting" : livePhase === "EVENT_RESOLUTION" ? "Counting" : livePhase === "PREDICTION_LOCKED" ? "Locked" : "Settling"}
-            </span>
-            {timeLeftSec != null && (
-              <span className="text-[10px] font-mono text-foreground">{timeLeftSec}s</span>
+          <div className="absolute bottom-2 right-2 flex flex-col items-end gap-1">
+            {livePhase === "EVENT_RESOLUTION" && liveCarCount != null && (
+              <div className="px-2 py-1 rounded-lg bg-emerald-500/20 backdrop-blur-sm border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 animate-pulse">
+                <Car className="h-3 w-3" />
+                <span className="text-[10px] font-mono font-bold">
+                  Cars: {liveCarCount}
+                </span>
+              </div>
             )}
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-black/60 backdrop-blur-sm border border-border/30">
+              <Clock className="h-3 w-3 text-primary" />
+              <span className="text-[10px] font-mono font-bold text-primary">
+                {livePhase === "PREDICTION_OPEN" ? "Betting" : livePhase === "EVENT_RESOLUTION" ? "Counting" : livePhase === "PREDICTION_LOCKED" ? "Locked" : "Settling"}
+              </span>
+              {timeLeftSec != null && (
+                <span className="text-[10px] font-mono text-foreground">{timeLeftSec}s</span>
+              )}
+            </div>
           </div>
         )}
       </div>

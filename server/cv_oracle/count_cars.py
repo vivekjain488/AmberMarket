@@ -416,8 +416,8 @@ def cv_counter(state: State, stream_url: str, max_seconds: int) -> None:
     # Tripwire at 60% of frame height
     tripwire_y = int(h * 0.60)
 
-    # Initialize tracker
-    tracker = CentroidTracker(max_disappeared=30, max_distance=max(w, h) * 0.15)
+    # Initialize tracker with high persistence (survives long red lights without double counting)
+    tracker = CentroidTracker(max_disappeared=200, max_distance=max(w, h) * 0.18)
 
     start = time.time()
     last_emit = 0.0
@@ -431,11 +431,11 @@ def cv_counter(state: State, stream_url: str, max_seconds: int) -> None:
 
         state.frames_processed += 1
 
-        # Skip frames for performance (process every 3rd frame)
-        if state.frames_processed % 3 != 0:
+        # Skip frames for performance (process every 2nd frame)
+        if state.frames_processed % 2 != 0:
             continue
 
-        # Detect traffic signal color (every 10th processed frame)
+        # Detect traffic signal color (every 30th processed frame)
         if state.frames_processed % 30 == 0:
             try:
                 state.signal_color = detect_signal_color(frame, cv2, np)
@@ -480,9 +480,9 @@ def cv_counter(state: State, stream_url: str, max_seconds: int) -> None:
                 "counted": tid in tracker.counted,
             })
 
-        # Emit every ~1 second
+        # Emit very frequently (every 0.2 seconds) for a hyper-live 25-second counting stream
         now = time.time()
-        if (now - last_emit) >= 1.0:
+        if (now - last_emit) >= 0.2:
             frame_emit_counter += 1
             include_frame = False
 

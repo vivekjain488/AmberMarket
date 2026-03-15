@@ -161,8 +161,8 @@ const engine = {
   lastSettlement: null,
   countdown: {
     predictionOpenMs: 0,       // Indefinite until manual start
-    predictionLockMs: 0,       // 0s locking countdown (skipped)
-    resolutionMs: 25_000,      // 25s car counting
+    predictionLockMs: 0,       // Skipped completely
+    resolutionMs: 25_000,      // 25s live car counting
     rewardMs: 5_000,           // 5s settlement display
   },
   python: { proc: null, lastCount: 0, frames: 0 },
