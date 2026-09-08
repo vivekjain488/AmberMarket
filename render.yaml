@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: ambermarket-server
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 10000
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: ORACLE_PRIVATE_KEY
+        sync: false
+      - key: BASE_SEPOLIA_RPC
+        value: https://sepolia.base.org
+      - key: BASE_SEPOLIA_CONTRACT_ADDRESS
+        sync: false
+      - key: BASE_SEPOLIA_AMBER_TOKEN_ADDRESS
+        sync: false
+      - key: BASE_SEPOLIA_JUNCTION_REGISTRY_ADDRESS
+        sync: false
+      - key: BASE_SEPOLIA_JUNCTION_NFT_ADDRESS
+        sync: false
+      - key: ENABLE_CV_ORACLE
+        value: "false"
+      - key: ETH_MAINNET_RPC
+        value: https://ethereum-rpc.publicnode.com
+      - key: ENS_PARENT_NAME
+        value: ambermarket.eth
+      - key: NAMESPACE_API_KEY
+        sync: false
